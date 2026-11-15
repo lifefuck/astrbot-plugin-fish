@@ -101,7 +101,9 @@
   <div class="card feed" id="feed"></div>
 
 <script>
-const API = "astrbot_plugin_fish/panel";
+// 面板会自己把插件名拼在路径前面（/extensions/<插件名>/<这里>），
+// 这里再带一次插件名就变成双前缀，接口全 404
+const API = "panel";
 const $ = (id) => document.getElementById(id);
 const nf = (n) => (n ?? 0).toLocaleString("zh-CN");
 
@@ -112,6 +114,10 @@ function dur(s) {
   if (s < 3600) return Math.round(s / 60) + " 分";
   if (s < 86400) return (s / 3600).toFixed(1) + " 小时";
   return (s / 86400).toFixed(1) + " 天";
+}
+// 没记录时别写成「— 前」，读起来像加载失败
+function ago(v) {
+  return v == null ? "无记录" : dur(v) + "前";
 }
 function hhmmss(ts) {
   const d = new Date(ts * 1000);
@@ -125,15 +131,19 @@ function esc(s) {
 let view = null;   // AstrBot 的桥接对象，ready 之前不能发请求
 let groupsCache = [];
 
+// 桥接层已经把 {status, data} 拆开过一层：拿到的是插件自己返回的 payload 本身。
+// 但不同版本可能有拆有不拆，两种形状都认，省得上游一改这边整页空白。
+function unwrap(res) {
+  if (!res || typeof res !== "object") return {};
+  if (res.status === "error") throw new Error(res.message || "接口报错");
+  if ("status" in res && res.data && typeof res.data === "object") return res.data;
+  return res;
+}
 async function get(path, params) {
-  const res = await view.apiGet(`${API}/${path}`, params || {});
-  if (res && res.status === "error") throw new Error(res.message || "接口报错");
-  return (res && res.data) || {};
+  return unwrap(await view.apiGet(`${API}/${path}`, params || {}));
 }
 async function post(path, body) {
-  const res = await view.apiPost(`${API}/${path}`, body);
-  if (res && res.status === "error") throw new Error(res.message || "保存失败");
-  return (res && res.data) || {};
+  return unwrap(await view.apiPost(`${API}/${path}`, body));
 }
 
 function renderStats(d) {
@@ -173,7 +183,7 @@ function renderGroups(list) {
           <input type="range" min="0" max="1" step="0.05" data-act="desire" value="${desire === "" ? 0.3 : desire}">
           <b data-val>${desire === "" ? "默认" : Number(desire).toFixed(2)}</b>
         </span>
-        <span class="muted">最近消息 ${dur(g.last_msg_ago)}前 · 上次回话 ${dur(g.last_bot_reply_ago)}前</span>
+        <span class="muted">最近消息 ${ago(g.last_msg_ago)} · 上次回话 ${ago(g.last_bot_reply_ago)}</span>
         <span class="sp" style="flex:1"></span>
         <span class="mind">
           <span><i>心情 ${(m.valence ?? 0).toFixed(2)}</i><span class="meter"><span style="width:${Math.round(((m.valence ?? 0) + 1) / 2 * 100)}%"></span></span></span>
@@ -251,8 +261,19 @@ async function load() {
 $("mgroup").onchange = load;
 $("reload").onclick = load;
 
+// 桥接脚本是 iframe 里后加载的，本页 inline script 先跑，直接取会拿到 undefined
+async function waitBridge(timeoutMs = 4000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const v = window.AstrBotPluginView || window.AstrBotPluginPage;
+    if (v && typeof v.ready === "function") return v;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return null;
+}
+
 (async () => {
-  view = window.AstrBotPluginView || window.AstrBotPluginPage;
+  view = await waitBridge();
   if (!view) { $("stamp").textContent = "没有拿到面板桥接脚本"; return; }
   await view.ready();
   load();
