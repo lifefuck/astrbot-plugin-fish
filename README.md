@@ -1,5 +1,7 @@
 # QQ 群聊机器人 · AstrBot 插件
 
+[![ci](https://github.com/lifefuck/astrbot-plugin-fish/actions/workflows/ci.yml/badge.svg)](https://github.com/lifefuck/astrbot-plugin-fish/actions/workflows/ci.yml)
+
 两个跑在 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 上的 QQ 插件。重点不是「一问一答」，而是尽量像个正常群友：记得住人，会挑时机插话，会打错字再补一句，会看群里发的图，会用表情包。
 
 协议端用 NapCat（或其他 OneBot 11 实现），模型接任意 OpenAI 兼容接口。
@@ -86,6 +88,10 @@ python3 scripts/privacy_scan.py --all --audit   # 手动查全仓
 ```
 
 密钥、手机号、内网 IP、家目录路径会直接拦；9~11 位数字（QQ 号量级）先提醒，确认是编的写进 `.privacy-allowlist` 就不再报。
+
+## CI
+
+每次推送跑三件事：`compileall` 语法检查、`scripts/check_plugin.py` 结构自检（metadata 字段、配置项类型和描述、入口是否像插件）、`privacy_scan.py` 全仓隐私扫描。Python 3.10 和 3.12 各跑一遍。
 
 ## 许可
 
