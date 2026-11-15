@@ -140,7 +140,9 @@ class PanelApi:
             "uptime": round(now - float(getattr(self.p, "_started", now)), 1),
             "started_at": float(getattr(self.p, "_started", now)),
             "bot_nickname": str(cfg.get("bot_nickname") or ""),
-            "groups_runtime": len(getattr(self.p, "_groups", {})),
+            # 「生效群」按白名单口径算：_groups 只有收到过消息才会建，进程刚起时是 0，
+            # 但面板上明明列着八个群，显示 0 会让人以为白名单没生效
+            "groups_runtime": len([g for g in self._known_groups() if self.p._group_allowed(g)]),
             "memory": mem,
             "memes": memes,
             "peers": len(getattr(self.p, "peers", []) or []),
