@@ -1,0 +1,6 @@
+name: astrbot_plugin_fish
+display_name: 小鲸鱼·群聊拟真
+desc: 把「小鲸鱼」自研 QQ 机器人的对话能力搬进 AstrBot：人设、心境、长期记忆、群表达学习、反模板、手滑错字、表情包与接话时机。
+version: 1.0.0
+author: life
+repo: https://github.com/lifefuck/astrbot-plugin-fish

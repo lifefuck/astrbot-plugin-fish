@@ -1,0 +1,12 @@
+# 插件运行时数据：记忆库、心境、prompt 存档，都不进版本库
+astrbot_plugin_fish/data/
+astrbot_plugin_memory_cmd/data/
+*.db
+*.db-wal
+*.db-shm
+astrbot_plugin_fish/meme-pack/
+
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
