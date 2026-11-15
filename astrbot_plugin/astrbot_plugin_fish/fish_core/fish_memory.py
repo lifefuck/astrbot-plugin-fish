@@ -34,6 +34,21 @@ RULES = [
     ("note", r"(记住|记一下|记着|别忘了|别忘记|帮我记)"),
 ]
 
+# 单个记忆超过这个长度基本就是整段粘贴，不是「记住的事」
+MAX_MEMORY_CHARS = 140
+
+# 见到这些标记直接不记：转发记录、图片占位、协议原文、裸链接
+JUNK_MARKERS = (
+    "合并转发", "聊天记录 · 共", "[图片]", "[表情]", "[文件]",
+    "版权所有", "Licensed under", "TERMS AND CONDITIONS", "http://", "https://",
+)
+
+# 看图结果会跟着用户原话一起进记忆，得先剥掉：
+# 「[用户发送/附带的图片/表情包内容: 画面中是一位……]」这种是模型描述，不是这人说过的话
+VISION_NOISE = re.compile(
+    r"\[(?:用户发送/附带的图片/表情包内容|发送了图片/表情包|图片内容)[^\]]*\]"
+)
+
 SKIP_EXACT = {
     "你好", "在吗", "在么", "晚安", "早安", "哈哈", "嗯", "哦", "好的", "谢谢", "拜拜",
     "没事", "算了", "好的呢", "行", "可以", "收到", "6", "666", "1", "打卡"
@@ -163,11 +178,27 @@ class FishMemoryEngine:
 
     @staticmethod
     def should_skip(text: str) -> bool:
+        """明显不该进记忆库的东西，在入口就拦掉。
+
+        以前只拦了「太短」和「纯问句」，结果合并转发、整段粘贴、命令说明、许可文本
+        全被当成记忆存下来，面板上一屏全是这种东西，看着像抽风。
+        """
         t = (text or "").strip()
         if not t or t in SKIP_EXACT or len(t) < 4:
             return True
         # 纯问句不记
         if len(t) <= 12 and (t.endswith("吗") or t.endswith("呢") or t.endswith("?") or t.endswith("？")):
+            return True
+        # 整段粘贴没有记忆价值：转发记录、文件内容、许可协议都在这里
+        if len(t) > MAX_MEMORY_CHARS:
+            return True
+        if any(m in t for m in JUNK_MARKERS):
+            return True
+        # 命令说明/帮助文本：一句里塞了好几个 /command
+        if len(re.findall(r"(?<!\S)/[a-zA-Z][\w-]{1,20}", t)) >= 2:
+            return True
+        # 表情/符号堆：去掉表情后几乎没字
+        if len(CJK.findall(t)) <= 1 and len(set(t)) <= 4:
             return True
         return False
 
@@ -330,7 +361,8 @@ class FishMemoryEngine:
     # ---------------- 流水账记录与自动捕获 ----------------
     def record_turn(self, group_id: str, person_id: str, user_text: str, reply_text: str = ""):
         """记录回合流水账，并自动探测是否包含值得捕获的 7 类记忆"""
-        clean_user = (user_text or "").strip()
+        clean_user = VISION_NOISE.sub(" ", (user_text or "")).strip()
+        clean_user = re.sub(r"\s{2,}", " ", clean_user)
         if not clean_user:
             return
 
@@ -343,10 +375,13 @@ class FishMemoryEngine:
             )
             conn.commit()
 
-        # 规则自动捕获
+        # 规则自动捕获：一句话只落一条记忆。
+        # 以前一条消息命中几类就存几条，同一句话在面板上重复四五遍，
+        # 类型还各不相同（plan/promise/event 全是同一段文本）。
         if not self.should_skip(clean_user):
             detected = self.detect_types(clean_user)
-            for m_type in detected:
+            if detected:
+                m_type = max(detected, key=lambda k: TYPE_IMPORTANCE.get(k, 0.5))
                 self.add_memory(
                     group_id=group_id,
                     person_id=person_id,
