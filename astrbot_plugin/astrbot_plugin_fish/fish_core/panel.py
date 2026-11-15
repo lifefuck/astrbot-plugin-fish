@@ -207,8 +207,10 @@ class PanelApi:
         if not db.is_file():
             return _json_ok({"group_id": group_id, "people": [], "total": 0})
         # 列要起别名：行是 dict，靠下标取会直接 IndexError → 接口 500
+        # 取 title 不取 content：记忆正文可能是整段转发或长粘贴，
+        # 面板是概览，不该把原文原样摊在群号旁边
         sql = ("SELECT group_id, person_id, COUNT(*) AS cnt, AVG(importance) AS imp, "
-               "MAX(updated_at) AS ts, MAX(content) AS sample "
+               "MAX(updated_at) AS ts, MAX(title) AS sample, MAX(memory_type) AS kind "
                "FROM fish_memory_records WHERE is_deleted = 0")
         args: list = []
         if group_id:
@@ -233,7 +235,8 @@ class PanelApi:
             "count": int(r["cnt"]),
             "importance": round(float(r["imp"] or 0), 2),
             "updated_ago": _ago(float(r["ts"] or 0), now),
-            "sample": (r["sample"] or "")[:60],
+            "sample": (r["sample"] or "")[:40],
+            "type": r["kind"] or "event",
         } for r in rows]
         return _json_ok({"group_id": group_id, "people": people,
                          "total": len(people), "now": now})

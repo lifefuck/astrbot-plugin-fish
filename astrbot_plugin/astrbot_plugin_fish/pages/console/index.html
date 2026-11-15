@@ -220,9 +220,12 @@ function renderGroups(list) {
 
 function renderMem(d) {
   const rows = d.people || [];
+  const KIND = { fact: "事实", preference: "偏好", plan: "计划", promise: "承诺",
+                 relationship: "关系", event: "事件", note: "自记", plain: "流水" };
   $("mem").innerHTML = rows.length ? rows.map((p) => `<li>
       <span class="who">${esc(p.person_id)}</span>
       <span class="cnt">${nf(p.count)}</span>
+      <span class="tag">${KIND[p.type] || esc(p.type || "")}</span>
       <span class="samp" title="${esc(p.sample)}">${esc(p.sample || "")}</span>
       <span class="muted" style="margin-left:auto">${dur(p.updated_ago)}前</span>
     </li>`).join("") : '<li class="empty">这个范围里还没有记忆</li>';
