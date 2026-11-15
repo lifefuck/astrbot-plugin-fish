@@ -101,7 +101,8 @@ class PanelApi:
         except sqlite3.Error as e:
             logger.warning("[fish] 控制台读记忆库失败：%s", e)
             return {"total": 0, "people": 0, "groups": 0, "types": {}}
-        people = {(r[0], r[1]) for r in rows}
+        # 按人去重，不按「群+人」组合：同一个人在三个群各有记忆，面板写「3 人」才不算骗人
+        people = {r[1] for r in rows}
         types: dict[str, int] = {}
         for r in rows:
             types[r[2]] = types.get(r[2], 0) + int(r[3])
