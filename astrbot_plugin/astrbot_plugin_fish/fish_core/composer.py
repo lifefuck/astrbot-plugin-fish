@@ -1,0 +1,223 @@
+# -*- coding: utf-8 -*-
+"""把「小鲸鱼」原项目的 prompt 拼装逻辑搬过来。
+
+原项目在 services/llm.py 的 call_deepseek 里，把时间线、记忆、心境、群表达样例、
+云崽指令清单、时间戳一段段贴到 user prompt 末尾。这里保持同样的顺序和措辞，
+只把 broker（bot 全局对象）换成显式入参，好让它能被单测和注入法验证。
+"""
+
+import datetime
+import json
+import os
+import random
+import re
+import time
+
+_STYLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "style_fewshot.json")
+_style_cache = {"mtime": 0.0, "data": []}
+
+# 云崽面板指令清单：只有真在问用法时才带，平时一个字都不发
+# 群里别 @ 别人：行首/空格后的 @昵称整段削掉。中文名和后面的正文之间常常没空格，
+# 所以只吃「@ + 最多 12 个非空白字符」，剩下的正文留给模型原话来接
+_AT_MENTION = re.compile(r"(^|[\s，,])[@＠][^\s，。！？、,.!?：:]{1,12}")
+# 「我没艾特你啊」「不是要艾特」这类自我辩解的整句，直接删。它是在解释格式，
+# 不是在跟人说话；越解释越显得机器
+_AT_META_SENTENCE = re.compile(r"[^。！？!?\n]*?(?:我)?(?:没有|没|不是)[^。！？!?\n]{0,3}艾特[^。！？!?\n]*[。！？!?]?")
+
+_GAME_WORDS = ("原神", "星铁", "崩铁", "绝区零", "鸣潮", "异环")
+_HOW_WORDS = ("怎么", "如何", "在哪", "哪里", "帮助")
+
+
+def needs_games_kb(text: str) -> bool:
+    """这句是不是在问云崽面板的用法（prompts.needs_games_kb 的薄封装）。"""
+    if not text:
+        return False
+    low = text.lower()
+    if any(w in low for w in ("绑定", "面板", "体力", "深渊", "剧透", "抽卡", "签到",
+                              "帮助", "菜单", "指令", "命令", "点歌", "锅巴", "云崽")):
+        return True
+    entity = any(g in low for g in _GAME_WORDS) or "云崽" in low or "yunzai" in low
+    return entity and any(w in low for w in _HOW_WORDS)
+
+
+def style_samples_hint(group_id) -> str:
+    """从本群真实聊天里抽几组「有人说→别人怎么接」，给模型一个语感锚点。
+
+    形容词教不会语气，示例才教得会；每次随机换一批，避免它把某一组背成口头禅。
+    """
+    if not group_id:
+        return ""
+    try:
+        mtime = os.path.getmtime(_STYLE_PATH)
+        if _style_cache["mtime"] != mtime:
+            with open(_STYLE_PATH, encoding="utf-8") as f:
+                _style_cache["data"] = json.load(f)
+            _style_cache["mtime"] = mtime
+    except Exception:
+        return ""
+    pool = [x for x in _style_cache["data"] if str(x.get("gid")) == str(group_id)]
+    if len(pool) < 3:
+        return ""
+    picked = random.sample(pool, min(5, len(pool)))
+    body = "\n".join("「" + str(x["a"]) + "」→「" + str(x["b"]) + "」" for x in picked)
+    return "\n【这个群真实的接话长这样】别照抄内容，学的是「随口一句、踩在具体那件事上」的劲：\n" + body
+
+
+def time_hint(now: float | None = None) -> str:
+    """把真实时间贴在 prompt 末尾（放开头会破 KV cache 前缀命中）。"""
+    now_dt = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
+    hour = now_dt.hour
+    if 5 <= hour < 9:
+        period = "清晨/早晨"
+    elif 9 <= hour < 12:
+        period = "上午"
+    elif 12 <= hour < 14:
+        period = "中午"
+    elif 14 <= hour < 18:
+        period = "下午"
+    elif 18 <= hour < 23:
+        period = "晚上"
+    else:
+        period = "深夜/凌晨"
+    weekday = "一二三四五六日"[now_dt.weekday()]
+    return f"\n【当前真实时间】：{now_dt.strftime('%Y-%m-%d %H:%M')} 星期{weekday}（{period}）\n"
+
+
+def build_system_prompt(base_persona: str, bot_nick: str, bot_qq: str, group_id: str, is_private: bool) -> str:
+    """人设 + 身份锚点。
+
+    身份必须写死：本来人设里叫「小鲸鱼」，AstrBot 侧账号昵称可能完全不同，
+    模型会把两个名字当成两个人。
+    """
+    where = "私聊" if is_private else f"群 {group_id}"
+    identity = (
+        f"（认知基础：你在 QQ 上的账号叫「{bot_nick}」，QQ 号是 {bot_qq}，现在是{where}的对话。"
+        f"「小鲸鱼」「鲸宝」「大肥鱼」「傻鱼」这些外号说的都是你自己，别当成别人或山寨货）\n"
+    )
+    rule = (
+        "\n【输出约束】：只发要发进群的那句话本身。不要写 [send_message_to_user]、[reply] 这类标签，"
+        "不要输出英文思考过程，不要解释你在做什么，不要用 Markdown。"
+        "不要 @ 任何人（群里说话不需要点名，直接说事）；"
+        "也不要谈论自己有没有艾特人、不要解释发送格式。\n"
+    )
+    return f"{identity}{base_persona}{rule}"
+
+
+def build_user_prompt(
+    *,
+    timeline: list[str],
+    latest_line: str,
+    sender_nick: str,
+    sender_uid: str,
+    memory_lines: list[str],
+    affect_parts: list[str],
+    style_hint: str,
+    anti_repeat_hint: str,
+    games_kb: str,
+    is_at: bool,
+    is_private: bool,
+    now: float | None = None,
+    vision_desc: str = "",
+    social_hint: str = "",
+    cross_hint: str = "",
+) -> str:
+    """按原项目顺序拼 user prompt。"""
+    parts = []
+    if is_private:
+        parts.append("【对话记录】（这是私聊）")
+    else:
+        parts.append("【群聊记录】（从旧到新，最后一行是刚发生的）")
+    parts.extend(timeline or ["（群里暂时没别人说话）"])
+
+    if vision_desc:
+        # 图里说了什么必须摆在「当前这句」后面：放最前面模型会当成背景设定，答的时候当没看见
+        parts.append(f"【他这张图里】：{vision_desc}")
+
+    parts.append(f"\n【当前这句】：{sender_nick}（{sender_uid}）：{latest_line or '（只@了你，没打字）'}")
+    if is_at:
+        parts.append("（他是在直接跟你说话，必须回）")
+    else:
+        parts.append("（没人叫你，这句是群友之间的闲聊；插话就一两句，接着话头说）")
+
+    if memory_lines:
+        parts.append("\n【你还记得的关于他/她的事】：")
+        parts.extend("- " + m for m in memory_lines)
+
+    if affect_parts:
+        parts.append("")
+        parts.extend(affect_parts)
+
+    if style_hint:
+        parts.append(style_hint)
+
+    if anti_repeat_hint:
+        parts.append(anti_repeat_hint)
+
+    if games_kb:
+        parts.append("\n【云崽指令清单（群友在问用法，按这个答）】：\n" + games_kb)
+
+    if social_hint:
+        # 第一步（social_read）的结论，只给角度不给原文，免得模型把「该怎么接」复述出来
+        parts.append(social_hint)
+
+    if cross_hint:
+        parts.append(cross_hint)
+
+    parts.append(time_hint(now))
+    return "\n".join(parts)
+
+
+def anti_repeat_hint(recent_bot_replies: list[str]) -> str:
+    """把刚说过的几句摆回模型面前当负样本，比堆「禁止词表」有效。"""
+    recent = [r for r in (recent_bot_replies or []) if r][-4:]
+    if not recent:
+        return ""
+    return "【你刚在群里说过这些话，别原样重复，换个说法】：\n" + "\n".join(f"- {r}" for r in recent)
+
+
+# 模型偶尔会模仿工具调用语法，把整段 [send_message_to_user]…[/send_message_to_user] 吐进正文
+_FAKE_TOOL_TAG = re.compile(r"\[/?(?:send_message_to_user|send_msg|send_group_msg|reply|message)\s*[^\]]*\]", re.I)
+_BRACKET_ACTION = re.compile(r"[（(][^（()）]{1,12}[)）]")
+_MEME_LEFTOVER = re.compile(r"[\[【［]\s*MEME\s*[:：][^\]】］\n]*[\]】］]?", re.IGNORECASE)
+
+
+def _drop_english_meta(text: str) -> str:
+    """删掉模型漏出来的英文思考行。
+
+    中文群里几乎不会有整行英文；出现「Wait — I shouldn't use the tool…」这种，
+    是模型在自言自语，发出去就是事故。按「ASCII 字母占比 > 60% 且够长」判断，
+    比维护一串 meta 词表稳。
+    """
+    kept = []
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if len(s) >= 12:
+            letters = sum(1 for ch in s if ch.isascii() and ch.isalpha())
+            if letters / len(s) > 0.6:
+                continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def sanitize_reply(text: str) -> str:
+    """出口清洗：去掉 markdown 残余、括号动作、残留的表情标签。
+
+    模型偶尔会写 **粗体**、`（笑）`、`[MEME:得意]`，原项目在这一步统一削掉，
+    这里保持同样的处理顺序。
+    """
+    t = text or ""
+    t = _MEME_LEFTOVER.sub("", t)
+    t = _FAKE_TOOL_TAG.sub("", t)
+    t = _drop_english_meta(t)
+    t = re.sub(r"\*\*(.+?)\*\*", r"\1", t)
+    # 标签嵌在粗体里时（**[MEME:得意]**），剥完标签会剩下孤零零的 ****，
+    # 先按粗体替换一次之后还剩连续星号就整段删掉
+    t = re.sub(r"\*{2,}", "", t)
+    t = re.sub(r"`([^`]*)`", r"\1", t)
+    t = _BRACKET_ACTION.sub("", t)
+    # 群聊里不接受 @ 别人：模型学到的群表达样例里没有 @，但它会自作聪明加一个
+    # 「@张三 你说的对」，在群里就是强行点名，很烦。行首、行尾、整句的 @ 一起削
+    t = _AT_MENTION.sub("", t)
+    t = _AT_META_SENTENCE.sub("", t)
+    t = re.sub(r"[ \t]+", " ", t)
+    return t.strip()

@@ -1,0 +1,349 @@
+{
+  "enabled": {
+    "description": "总开关",
+    "type": "bool",
+    "default": true,
+    "hint": "关掉后插件完全不介入，群里恢复 AstrBot 原生行为（只有 @ 和唤醒前缀会回）。"
+  },
+  "enabled_groups": {
+    "description": "生效群白名单",
+    "type": "list",
+    "default": [],
+    "hint": "留空 = 所有群都不生效（安全默认）。填群号才上线，填 [\"*\"] 对所有群生效。"
+  },
+  "bot_nickname": {
+    "description": "QQ 上的昵称",
+    "type": "string",
+    "default": "小鲸鱼",
+    "hint": "只在 prompt 里锚定身份用，避免模型把自己的名字当成别人。"
+  },
+  "wake_prefix": {
+    "description": "AstrBot 唤醒前缀（仅用于识别，不拦消息）",
+    "type": "string",
+    "default": "ab!",
+    "hint": "带这个前缀的消息完全交给 AstrBot 自己的 LLM 链路处理，小鲸鱼不插手。必须和 AstrBot 全局唤醒前缀一致。"
+  },
+  "interject_desire": {
+    "description": "主动接话意愿",
+    "type": "float",
+    "default": 0.3,
+    "slider": {
+      "min": 0,
+      "max": 1,
+      "step": 0.05
+    },
+    "hint": "越高门槛越低。0.30 → 质量门槛 0.62（普通闲聊不接，提问/玩梗/点名才接）；0.60 → 门槛 0.38（几乎每条都插一句）。"
+  },
+  "interject_hourly_cap": {
+    "description": "每小时主动插话上限",
+    "type": "int",
+    "default": 8,
+    "slider": {
+      "min": 0,
+      "max": 40,
+      "step": 1
+    },
+    "hint": "被 @ 回话不受这个上限约束。"
+  },
+  "interject_cooldown_sec": {
+    "description": "主动接话硬冷却（秒）",
+    "type": "int",
+    "default": 300,
+    "hint": "刚说完话这段时间内绝不再主动插嘴，防霸屏。"
+  },
+  "reply_when_at": {
+    "description": "被 @ 必回",
+    "type": "bool",
+    "default": true
+  },
+  "reply_private": {
+    "description": "私聊必回",
+    "type": "bool",
+    "default": true
+  },
+  "typo_prob": {
+    "description": "手滑打错字的概率",
+    "type": "float",
+    "default": 0.06,
+    "slider": {
+      "min": 0,
+      "max": 0.3,
+      "step": 0.01
+    },
+    "hint": "只作用于 8 字以上的句子，不动链接/@/数字。设 0 关闭。"
+  },
+  "typo_correct_prob": {
+    "description": "打错后补一句纠正的概率",
+    "type": "float",
+    "default": 0.3,
+    "slider": {
+      "min": 0,
+      "max": 1,
+      "step": 0.05
+    }
+  },
+  "meme_enabled": {
+    "description": "按情绪标签配表情包",
+    "type": "bool",
+    "default": true,
+    "hint": "模型写了 [MEME:情绪] 时附一张图；标签本身一定被剥掉，不会漏进群。"
+  },
+  "timeline_size": {
+    "description": "喂给模型的最近消息条数",
+    "type": "int",
+    "default": 12,
+    "slider": {
+      "min": 0,
+      "max": 40,
+      "step": 1
+    }
+  },
+  "memory_recall_topk": {
+    "description": "记忆召回条数",
+    "type": "int",
+    "default": 2,
+    "slider": {
+      "min": 0,
+      "max": 6,
+      "step": 1
+    }
+  },
+  "style_learning": {
+    "description": "在线学习群表达样例",
+    "type": "bool",
+    "default": true,
+    "hint": "把群里相邻两条消息凑成「有人说→别人怎么接」，进 data/style_fewshot.json。"
+  },
+  "debug_dump_prompt": {
+    "description": "把每次拼好的 prompt 落盘",
+    "type": "bool",
+    "default": false,
+    "hint": "写到 data/last_prompt.txt，用于核对心境/记忆提示是否被注入。排查完记得关。"
+  },
+  "command_prefixes": {
+    "description": "其他插件的指令前缀",
+    "type": "list",
+    "default": [
+      "#",
+      "*",
+      "%",
+      "~"
+    ],
+    "hint": "以这些字符开头的群消息（云崽面板指令）完全不介入。"
+  },
+  "split_enabled": {
+    "description": "长回复拆条",
+    "type": "bool",
+    "default": true,
+    "hint": "超过字数阈值就拆成 2~3 条隔 0.6~1.5 秒补发，像人连着敲。括号和表情标签不会被切断。"
+  },
+  "split_max_chars": {
+    "description": "拆条字数阈值",
+    "type": "int",
+    "default": 60,
+    "slider": {
+      "min": 20,
+      "max": 200,
+      "step": 5
+    },
+    "hint": "单条超过这么多字才拆。0 或负数 = 永不拆。"
+  },
+  "split_max_parts": {
+    "description": "最多拆成几条",
+    "type": "int",
+    "default": 3,
+    "slider": {
+      "min": 2,
+      "max": 5,
+      "step": 1
+    },
+    "hint": "超出的内容并进最后一条，宁可长一点也不刷屏。"
+  },
+  "split_gap_min": {
+    "description": "拆条最小间隔（秒）",
+    "type": "float",
+    "default": 0.6,
+    "slider": {
+      "min": 0.2,
+      "max": 5,
+      "step": 0.1
+    }
+  },
+  "split_gap_max": {
+    "description": "拆条最大间隔（秒）",
+    "type": "float",
+    "default": 1.5,
+    "slider": {
+      "min": 0.3,
+      "max": 8,
+      "step": 0.1
+    }
+  },
+  "vision_enabled": {
+    "description": "群里发图时让 Gemini 看一眼",
+    "type": "bool",
+    "default": true,
+    "hint": "只在决定要回的时候才识图，不会为每张图烧配额。识图失败静默降级成纯文字。"
+  },
+  "vision_model": {
+    "description": "视觉主模型",
+    "type": "string",
+    "default": "gemini-3.5-flash-lite",
+    "hint": "默认 lite：实测 1~2 秒就能把图里的字逐字抄准；gemini-3.8-flash 在这台机器上常 25 秒超时，不适合群聊实时场景。"
+  },
+  "vision_fallback_models": {
+    "description": "视觉降级模型",
+    "type": "list",
+    "default": [
+      "gemini-3.6-flash",
+      "gemini-3.8-flash"
+    ],
+    "hint": "按顺序试；上次成功的模型下次自动排到队首，别每次都先等主模型超时。"
+  },
+  "vision_max_images": {
+    "description": "单条消息最多看几张图",
+    "type": "int",
+    "default": 2,
+    "slider": {
+      "min": 1,
+      "max": 4,
+      "step": 1
+    }
+  },
+  "vision_timeout_sec": {
+    "description": "单模型超时（秒）",
+    "type": "int",
+    "default": 6,
+    "slider": {
+      "min": 3,
+      "max": 60,
+      "step": 1
+    },
+    "hint": "群聊等不起，超时立刻换下一个模型。"
+  },
+  "vision_total_budget_sec": {
+    "description": "识图总预算（秒）",
+    "type": "int",
+    "default": 12,
+    "slider": {
+      "min": 5,
+      "max": 60,
+      "step": 1
+    },
+    "hint": "一张图最多等这么久，超了就按没有图继续回。"
+  },
+  "vision_proxy": {
+    "description": "访问 Google 的代理",
+    "type": "string",
+    "default": "http://127.0.0.1:7890",
+    "hint": "留空 = 直连。国内机器基本都得填。"
+  },
+  "vision_api_key": {
+    "description": "Gemini 密钥（可选）",
+    "type": "string",
+    "default": "",
+    "hint": "优先级：环境变量 > vision_key_env_file > 这里。建议留空，用 env 文件。"
+  },
+  "vision_key_env_file": {
+    "description": "读取密钥的 env 文件",
+    "type": "string",
+    "default": "~/.config/qq-deepseek-bot.env",
+    "hint": "按 KEY=VALUE 解析，只取 GEMINI_API_KEY / GOOGLE_API_KEY / VISION_*。"
+  },
+  "social_read_enabled": {
+    "description": "两步生成：先判该不该接",
+    "type": "bool",
+    "default": true,
+    "hint": "先小调用判「这帮人在聊什么、我该不该接」，判不接就不调主模型。"
+  },
+  "social_read_provider": {
+    "description": "judge 用的 provider id",
+    "type": "string",
+    "default": "",
+    "hint": "留空 = 当前会话默认模型。填了就用指定 provider 省主模型额度。"
+  },
+  "social_read_timeout_sec": {
+    "description": "judge 超时（秒）",
+    "type": "int",
+    "default": 8,
+    "slider": {
+      "min": 2,
+      "max": 30,
+      "step": 1
+    },
+    "hint": "超时/报错一律按「能接」放行，绝不因此把回复吞掉。"
+  },
+  "meme_gate_enabled": {
+    "description": "斗图闸",
+    "type": "bool",
+    "default": true,
+    "hint": "同一话题一回合最多一张：刚发过、群友刚发图、标签和上次相同都拦。"
+  },
+  "meme_min_gap_sec": {
+    "description": "两张表情包之间的最小间隔（秒）",
+    "type": "int",
+    "default": 300,
+    "slider": {
+      "min": 0,
+      "max": 3600,
+      "step": 30
+    },
+    "hint": "防止连着几轮都在甩图。"
+  },
+  "meme_follow_gap_sec": {
+    "description": "对方发图后多久内不跟图（秒）",
+    "type": "int",
+    "default": 90,
+    "slider": {
+      "min": 0,
+      "max": 600,
+      "step": 10
+    },
+    "hint": "跟图就成斗图刷屏了。"
+  },
+  "peer_bots_path": {
+    "description": "其他机器人名单路径",
+    "type": "string",
+    "default": "",
+    "hint": "data/peer_bots.json，一个 QQ 数组。留空 = 插件 data/peer_bots.json；文件不存在会自动建空数组。"
+  },
+  "peer_bots_name_hints": {
+    "description": "机器人昵称特征（追加）",
+    "type": "list",
+    "default": [],
+    "hint": "默认已含 机器人/bot/助手/管家，这里只补额外的。"
+  },
+  "cross_group_enabled": {
+    "description": "跨群记忆",
+    "type": "bool",
+    "default": true,
+    "hint": "把各群话题记成短摘要，拼 prompt 时允许提一句「别的群在聊」。"
+  },
+  "cross_group_recall": {
+    "description": "引用几条别的群话题",
+    "type": "int",
+    "default": 2,
+    "slider": {
+      "min": 0,
+      "max": 4,
+      "step": 1
+    },
+    "hint": "只引 3 小时内、去重后的短摘要。"
+  },
+  "cross_group_max_topics": {
+    "description": "话题库上限",
+    "type": "int",
+    "default": 60,
+    "slider": {
+      "min": 10,
+      "max": 500,
+      "step": 10
+    }
+  },
+  "poke_back": {
+    "description": "被戳时回戳",
+    "type": "bool",
+    "default": true,
+    "hint": "有人戳它，先秒戳回去再回话。同一个 3 秒内只回戳一次，防止互戳死循环。"
+  }
+}

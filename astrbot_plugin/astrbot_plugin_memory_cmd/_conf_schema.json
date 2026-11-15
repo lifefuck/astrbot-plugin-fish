@@ -1,0 +1,38 @@
+{
+  "enabled": {
+    "description": "总开关",
+    "type": "bool",
+    "default": true,
+    "hint": "关掉后 /memary 不再响应。"
+  },
+  "db_path": {
+    "description": "记忆库路径",
+    "type": "string",
+    "default": "",
+    "hint": "留空 = 自动用 astrbot_plugin_fish/data/fish_memory.db。两个插件装在不同位置时手动填绝对路径。"
+  },
+  "owner_qq": {
+    "description": "主人 QQ",
+    "type": "string",
+    "default": "",
+    "hint": "只影响排序：填了就排第一位。留空则按记忆条数排。权限不看这里，走 AstrBot 自己的管理员判定。"
+  },
+  "per_person": {
+    "description": "每人最多显示几条",
+    "type": "int",
+    "default": 5,
+    "hint": "一个人的记忆可能几十条，全列出来别人就没得看了。"
+  },
+  "page_size": {
+    "description": "分页每页人数",
+    "type": "int",
+    "default": 6,
+    "hint": "仅在合并转发不可用时生效。"
+  },
+  "forward": {
+    "description": "用合并转发",
+    "type": "bool",
+    "default": true,
+    "hint": "关掉则改发分页文本。"
+  }
+}

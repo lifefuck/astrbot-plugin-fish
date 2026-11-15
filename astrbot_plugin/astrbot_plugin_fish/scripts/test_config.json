@@ -1,0 +1,26 @@
+{
+    "enabled": true,
+    "enabled_groups": [
+        "999999"
+    ],
+    "bot_nickname": "小鲸鱼",
+    "wake_prefix": "ab!",
+    "interject_desire": 0.3,
+    "interject_hourly_cap": 8,
+    "interject_cooldown_sec": 30,
+    "reply_when_at": true,
+    "reply_private": true,
+    "typo_prob": 0.0,
+    "typo_correct_prob": 0.3,
+    "meme_enabled": true,
+    "timeline_size": 12,
+    "memory_recall_topk": 2,
+    "style_learning": true,
+    "debug_dump_prompt": true,
+    "command_prefixes": [
+        "#",
+        "*",
+        "%",
+        "~"
+    ]
+}
