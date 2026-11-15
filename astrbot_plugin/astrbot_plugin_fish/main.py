@@ -71,6 +71,7 @@ vision = _load("vision", "vision.py")
 social_read = _load("social_read", "social_read.py")
 peer_bots = _load("peer_bots", "peer_bots.py")
 cross_memory = _load("cross_memory", "cross_memory.py")
+panel_api = _load("panel", "panel.py")
 
 DEFAULTS = {
     "enabled": True,
@@ -240,6 +241,14 @@ class FishPlugin(Star):
 
         self._groups: dict[str, GroupState] = {}
 
+        # 控制台用的最近事件环形缓冲：老面板那栏「实时交互日志」搬到面板里，
+        # 不再自己维护一份文件，进程重启就重来，够看就行
+        self._events: deque = deque(maxlen=int(self.cfg.get("panel_event_buffer", 200) or 200))
+        # 群级 override：面板改的开关落在这个文件，跟 AstrBot 全局配置分开，
+        # 面板改错也只是这一项，不会把整份插件配置写坏
+        self.overrides_path = DATA_DIR / "group_overrides.json"
+        self._group_overrides: dict = self._load_overrides()
+
         # 跨群话题库：只存短摘要，落盘在插件自己的 data/ 下
         self.cross = cross_memory.CrossGroupMemory(
             str(DATA_DIR / "cross_group_topics.json"),
@@ -260,6 +269,12 @@ class FishPlugin(Star):
             len(self.peers),
             len(self.cross.topics),
         )
+        try:
+            panel_api.PanelApi(self).register()
+        except Exception as e:
+            # 面板挂了不该拖死聊天，这里只报警
+            logger.warning("[fish] 控制台接口注册失败：%s: %s", type(e).__name__, e)
+
         logger.info("[fish] 拆条 %s（%d 字起拆，最多 %d 条）；两步生成 %s；看图 %s（%s）",
                     "开" if self.cfg.get("split_enabled", True) else "关",
                     int(self.cfg.get("split_max_chars", 60) or 60),
@@ -280,6 +295,49 @@ class FishPlugin(Star):
         if st is None:
             st = self._groups[gid] = GroupState()
         return st
+
+    # ---------------- 控制台支撑 ----------------
+    def _load_overrides(self) -> dict:
+        """读群级 override。文件坏了就当空，别让插件起不来。"""
+        try:
+            raw = json.loads(self.overrides_path.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, dict) else {}
+        except FileNotFoundError:
+            return {}
+        except Exception as e:
+            logger.warning("[fish] 群 override 读取失败（按空处理）：%s", e)
+            return {}
+
+    def save_group_overrides(self, groups: dict) -> None:
+        """先写临时文件再改名：面板保存时正赶上进程被杀，也不会留下半截 JSON。"""
+        tmp = self.overrides_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(groups, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self.overrides_path)
+        self._group_overrides = groups
+
+    def meme_stats(self) -> dict:
+        """表情包按标签计数，面板要的是汇总数。"""
+        try:
+            return dict(meme_catalog.stats() or {})
+        except Exception as e:
+            logger.debug("[fish] 表情包统计失败：%s", e)
+            return {}
+
+    def log_event(self, kind: str, gid: str, text: str, **extra) -> None:
+        """往环形缓冲里记一条，控制台「最近交互」读的就是它。
+
+        只存长度受限的单行文本：这里的内容会被面板渲染，太长或带换行都会把界面撑乱。
+        """
+        try:
+            self._events.append({
+                "ts": time.time(),
+                "kind": kind,
+                "group_id": str(gid or ""),
+                **{k: (str(v)[:80] if k != "score" else v) for k, v in extra.items()},
+                "text": str(text or "").replace("\n", " ")[:120],
+            })
+        except Exception:
+            pass
 
     @staticmethod
     def _mtime(path: str) -> float:
@@ -399,6 +457,14 @@ class FishPlugin(Star):
         默认空列表 = 谁都不生效：这套插件会主动插话，装完就闷声往真群里发消息
         是最坏的结果。要上线必须把群号写进 enabled_groups，或者填 ["*"] 全开。
         """
+        ov = (self._group_overrides.get(str(gid)) or {}).get("enabled")
+        # 面板上单独关掉的群优先：群里出事了第一反应是让它闭嘴，
+        # 不该逼人回去翻整份配置找 group 白名单
+        if ov is False:
+            return False
+        if ov is True:
+            return True
+
         groups = self.cfg.get("enabled_groups") or []
         if isinstance(groups, str):
             groups = [g for g in re.split(r"[,，\s]+", groups) if g]
@@ -506,6 +572,7 @@ class FishPlugin(Star):
             if not ok:
                 # 不接话也要做自动感知（原项目对每条群消息都记，不只记回过的）
                 logger.info("[fish] 群 %s 不接（%s）：%s", gid, reason, text[:30])
+                self.log_event("skip", gid, text[:60], who=nick, why=reason)
                 await self._remember(gid, uid, text)
                 event.stop_event()
                 return
@@ -526,6 +593,8 @@ class FishPlugin(Star):
                 # 判「不接」就到此为止，主模型一次都不调（这是这一步省下的主要延迟）
                 logger.info("[fish] 群 %s social_read 判不接（话题=%r），不调主模型：%s",
                             gid, verdict.get("topic", ""), text[:30])
+                self.log_event("skip", gid, text[:60], who=nick,
+                               why=f"social_read 判不接（{verdict.get('topic', '')}）")
                 await self._remember(gid, uid, text)
                 event.stop_event()
                 return
@@ -548,6 +617,8 @@ class FishPlugin(Star):
         st.last_bot_reply_ts = now
         event.set_extra("fish_pending", {
             "gid": gid, "uid": uid, "nick": nick, "text": text, "at": is_at,
+            # 决定回的原因一并带走：控制台要显示「这句为什么接」
+            "reason": reason,
         })
         logger.info("[fish] 群 %s %s(%s) 决定回（%s）：%s", gid, nick, uid, reason, text[:40])
         yield event.request_llm(
@@ -625,7 +696,10 @@ class FishPlugin(Star):
             msgs_since_bot=st.msgs_since_bot,
             last_reply_answered=affect.is_last_reply_answered(gid),
         )
-        threshold = interject_score.interject_threshold(float(self.cfg.get("interject_desire", 0.30)))
+        # 群级 override 优先于全局意愿：一个群吵、一个群安静，只能分别调
+        ov_desire = self._group_overrides.get(str(gid), {}).get("interject_desire")
+        desire = float(self.cfg.get("interject_desire", 0.30) if ov_desire is None else ov_desire)
+        threshold = interject_score.interject_threshold(desire)
         passed = score >= threshold
         if passed:
             st.interject_times.append(now)
@@ -684,6 +758,7 @@ class FishPlugin(Star):
         )
         logger.info("[fish] 戳一戳 <- %s(%s) 群 %s", nick, uid, gid)
         # 先回戳再回话：两件事互不等待，戳要秒到，话照旧慢慢说
+        self.log_event("poke", gid, f"{nick or uid} 戳了一下", who=nick or uid)
         if self.cfg.get("poke_back", True):
             await _poke_back(getattr(event, "bot", None), gid, uid, self_id)
         yield event.request_llm(prompt=user_prompt, system_prompt=system_prompt,
@@ -848,6 +923,9 @@ class FishPlugin(Star):
         st.last_bot_reply_ts = now
         st.msgs_since_bot = 0
         affect.on_bot_spoke(gid)
+        self.log_event("reply", gid, final, who=meta.get("nick", ""),
+                       why=meta.get("reason", ""), meme=1 if meme_b64 else 0,
+                       parts=len(parts))
         try:
             if gid != "private":
                 self.memory.record_turn(gid, meta["uid"], meta["text"], final)

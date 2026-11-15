@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>大肥鱼控制台</title>
+<style>
+  :root {
+    --bg: #16181c; --panel: #1e2126; --line: #2c3038; --fg: #e6e8ec;
+    --dim: #9aa0aa; --accent: #6ea8fe; --warn: #e0a34a; --bad: #e06c75; --ok: #7bc47f;
+  }
+  [data-theme="light"] {
+    --bg: #f5f6f8; --panel: #ffffff; --line: #e2e5ea; --fg: #1d2026;
+    --dim: #6b7280; --accent: #2f6feb; --warn: #b8761f; --bad: #c0392b; --ok: #2e7d32;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px 22px 40px; background: var(--bg); color: var(--fg);
+    font: 13px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  h2 { font-size: 13px; font-weight: 600; color: var(--dim); margin: 26px 0 10px; letter-spacing: .04em; }
+  .bar { display: flex; align-items: center; gap: 12px; }
+  .bar h1 { font-size: 16px; font-weight: 600; margin: 0; }
+  .bar .sp { flex: 1; }
+  button {
+    background: transparent; color: var(--dim); border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+  }
+  button:hover { color: var(--fg); border-color: var(--dim); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 14px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .stat .k { color: var(--dim); font-size: 11px; }
+  .stat .v { font-size: 19px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .stat .v small { font-size: 11px; color: var(--dim); margin-left: 3px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 8px; }
+  .card.off { opacity: .55; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .gid { font-family: ui-monospace, Menlo, monospace; font-size: 14px; }
+  .muted { color: var(--dim); font-size: 12px; }
+  .num { font-variant-numeric: tabular-nums; }
+  .tags { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tag { border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; font-size: 11px; color: var(--dim); }
+  .tag.on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+  .tag.hot { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+  .sw { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; font-size: 12px; }
+  .sw input { accent-color: var(--accent); }
+  .slider { display: inline-flex; align-items: center; gap: 8px; }
+  .slider input { width: 110px; accent-color: var(--accent); }
+  .slider b { font-variant-numeric: tabular-nums; font-weight: 500; min-width: 30px; text-align: right; }
+  .mind { display: flex; gap: 10px; }
+  .mind i { font-style: normal; color: var(--dim); font-size: 11px; }
+  .mind .meter { width: 54px; height: 3px; background: var(--line); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+  .mind .meter span { display: block; height: 100%; background: var(--accent); }
+  .split { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 22px; align-items: start; }
+  @media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
+  ul.list { list-style: none; margin: 0; padding: 0; }
+  ul.list li { display: flex; gap: 10px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line); }
+  ul.list li:last-child { border-bottom: 0; }
+  ul.list .who { font-family: ui-monospace, Menlo, monospace; font-size: 12px; min-width: 92px; }
+  ul.list .cnt { color: var(--accent); font-variant-numeric: tabular-nums; min-width: 34px; }
+  ul.list .samp { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .feed { max-height: 480px; overflow-y: auto; }
+  .ev { display: flex; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+  .ev:last-child { border-bottom: 0; }
+  .ev .t { color: var(--dim); font-family: ui-monospace, Menlo, monospace; min-width: 56px; }
+  .ev .k { min-width: 40px; text-align: center; border-radius: 4px; border: 1px solid var(--line); font-size: 11px; height: 18px; line-height: 16px; }
+  .ev .k.reply { color: var(--ok); } .ev .k.skip { color: var(--dim); }
+  .ev .k.poke { color: var(--warn); } .ev .k.panel { color: var(--accent); }
+  .ev .x { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ev .why { color: var(--dim); }
+  select {
+    background: var(--panel); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 8px; font-size: 12px;
+  }
+  .empty { color: var(--dim); font-size: 12px; padding: 10px 0; }
+  .err { color: var(--bad); font-size: 12px; }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <h1>大肥鱼控制台</h1>
+    <span class="sp"></span>
+    <span class="muted" id="stamp"></span>
+    <button id="reload">刷新</button>
+  </div>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="split">
+    <div>
+      <h2>群</h2>
+      <div id="groups"></div>
+    </div>
+    <div>
+      <h2>群友记忆 <select id="mgroup"><option value="">全部群</option></select></h2>
+      <div class="card" style="padding:6px 14px"><ul class="list" id="mem"></ul></div>
+    </div>
+  </div>
+
+  <h2>最近交互</h2>
+  <div class="card feed" id="feed"></div>
+
+<script>
+const API = "astrbot_plugin_fish/panel";
+const $ = (id) => document.getElementById(id);
+const nf = (n) => (n ?? 0).toLocaleString("zh-CN");
+
+// 秒数转人话：面板上全是「多少秒前」，直接给数字没人想换算
+function dur(s) {
+  if (s == null) return "—";
+  if (s < 60) return Math.round(s) + " 秒";
+  if (s < 3600) return Math.round(s / 60) + " 分";
+  if (s < 86400) return (s / 3600).toFixed(1) + " 小时";
+  return (s / 86400).toFixed(1) + " 天";
+}
+function hhmmss(ts) {
+  const d = new Date(ts * 1000);
+  return [d.getHours(), d.getMinutes(), d.getSeconds()]
+    .map((x) => String(x).padStart(2, "0")).join(":");
+}
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+let view = null;   // AstrBot 的桥接对象，ready 之前不能发请求
+let groupsCache = [];
+
+async function get(path, params) {
+  const res = await view.apiGet(`${API}/${path}`, params || {});
+  if (res && res.status === "error") throw new Error(res.message || "接口报错");
+  return (res && res.data) || {};
+}
+async function post(path, body) {
+  const res = await view.apiPost(`${API}/${path}`, body);
+  if (res && res.status === "error") throw new Error(res.message || "保存失败");
+  return (res && res.data) || {};
+}
+
+function renderStats(d) {
+  const sw = d.switches || {};
+  $("stats").innerHTML = [
+    ["运行", dur(d.uptime)],
+    ["生效群", `${nf(d.groups_runtime)}<small>个</small>`],
+    ["记忆", `${nf((d.memory || {}).total)}<small>条 / ${nf((d.memory || {}).people)}人</small>`],
+    ["表情包", `${nf(d.memes)}<small>张</small>`],
+    ["插话意愿", Number(sw.interject_desire ?? 0).toFixed(2)],
+    ["冷却", `${nf(sw.interject_cooldown_sec)}<small>秒</small>`],
+  ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+}
+
+function renderGroups(list) {
+  groupsCache = list;
+  if (!list.length) { $("groups").innerHTML = '<div class="empty">还没有群活动记录</div>'; return; }
+  $("groups").innerHTML = list.map((g) => {
+    const ov = g.override || {};
+    const desire = ov.interject_desire == null ? "" : ov.interject_desire;
+    const m = g.mind || {};
+    return `<div class="card ${g.enabled ? "" : "off"}" data-gid="${esc(g.group_id)}">
+      <div class="row">
+        <span class="gid">${esc(g.group_id)}</span>
+        <span class="tags">
+          <span class="tag ${g.enabled ? "on" : ""}">${g.enabled ? "接话中" : "已关"}</span>
+          <span class="tag">缓冲 ${nf(g.buffered_msgs)} 条</span>
+          <span class="tag ${g.interject_last_hour ? "hot" : ""}">近1h 插话 ${nf(g.interject_last_hour)}</span>
+          <span class="tag">记忆 ${nf(g.memory)}</span>
+        </span>
+        <span class="sp" style="flex:1"></span>
+        <label class="sw"><input type="checkbox" data-act="enabled" ${g.enabled ? "checked" : ""}>启用</label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <span class="slider">
+          <span class="muted">意愿</span>
+          <input type="range" min="0" max="1" step="0.05" data-act="desire" value="${desire === "" ? 0.3 : desire}">
+          <b data-val>${desire === "" ? "默认" : Number(desire).toFixed(2)}</b>
+        </span>
+        <span class="muted">最近消息 ${dur(g.last_msg_ago)}前 · 上次回话 ${dur(g.last_bot_reply_ago)}前</span>
+        <span class="sp" style="flex:1"></span>
+        <span class="mind">
+          <span><i>心情 ${(m.valence ?? 0).toFixed(2)}</i><span class="meter"><span style="width:${Math.round(((m.valence ?? 0) + 1) / 2 * 100)}%"></span></span></span>
+          <span><i>兴致 ${(m.arousal ?? 0).toFixed(2)}</i><span class="meter"><span style="width:${Math.round((m.arousal ?? 0) * 100)}%"></span></span></span>
+          <span><i>赌气 ${(m.pout ?? 0).toFixed(2)}</i><span class="meter"><span style="width:${Math.round((m.pout ?? 0) * 100)}%"></span></span></span>
+        </span>
+      </div>
+      ${ov.note ? `<div class="muted" style="margin-top:6px">备注：${esc(ov.note)}</div>` : ""}
+    </div>`;
+  }).join("");
+
+  for (const card of $("groups").children) {
+    const gid = card.dataset.gid;
+    const cb = card.querySelector('[data-act="enabled"]');
+    const rg = card.querySelector('[data-act="desire"]');
+    const out = card.querySelector("[data-val]");
+    cb.onchange = async () => {
+      try { await post("group", { group_id: gid, key: "enabled", value: cb.checked }); load(); }
+      catch (e) { alert(e.message); cb.checked = !cb.checked; }
+    };
+    rg.oninput = () => { out.textContent = Number(rg.value).toFixed(2); };
+    rg.onchange = async () => {
+      try { await post("group", { group_id: gid, key: "interject_desire", value: Number(rg.value) }); load(); }
+      catch (e) { alert(e.message); }
+    };
+  }
+
+  const sel = $("mgroup");
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">全部群</option>' +
+    list.map((g) => `<option value="${esc(g.group_id)}">${esc(g.group_id)}</option>`).join("");
+  sel.value = cur;
+}
+
+function renderMem(d) {
+  const rows = d.people || [];
+  $("mem").innerHTML = rows.length ? rows.map((p) => `<li>
+      <span class="who">${esc(p.person_id)}</span>
+      <span class="cnt">${nf(p.count)}</span>
+      <span class="samp" title="${esc(p.sample)}">${esc(p.sample || "")}</span>
+      <span class="muted" style="margin-left:auto">${dur(p.updated_ago)}前</span>
+    </li>`).join("") : '<li class="empty">这个范围里还没有记忆</li>';
+}
+
+function renderFeed(d) {
+  const rows = d.events || [];
+  $("feed").innerHTML = rows.length ? rows.map((e) => {
+    const kind = e.kind || "?";
+    const label = { reply: "回", skip: "略", poke: "戳", panel: "改" }[kind] || kind;
+    const why = e.why ? `<span class="why">· ${esc(e.why)}</span>` : "";
+    const who = e.who ? `${esc(e.who)}：` : "";
+    return `<div class="ev">
+      <span class="t">${hhmmss(e.ts)}</span>
+      <span class="k ${kind}">${label}</span>
+      <span class="muted">${esc(e.group_id || "")}</span>
+      <span class="x">${who}${esc(e.text)} ${why}</span>
+    </div>`;
+  }).join("") : '<div class="empty">还没有事件</div>';
+}
+
+async function load() {
+  try {
+    const [ov, gs] = await Promise.all([get("overview"), get("groups")]);
+    renderStats(ov);
+    renderGroups(gs.groups || []);
+    const gid = $("mgroup").value;
+    renderMem(await get("memories", gid ? { group_id: gid } : {}));
+    renderFeed(await get("events", { limit: 80 }));
+    $("stamp").textContent = "刷新于 " + new Date().toLocaleTimeString("zh-CN");
+  } catch (e) {
+    $("stamp").innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  }
+}
+
+$("mgroup").onchange = load;
+$("reload").onclick = load;
+
+(async () => {
+  view = window.AstrBotPluginView || window.AstrBotPluginPage;
+  if (!view) { $("stamp").textContent = "没有拿到面板桥接脚本"; return; }
+  await view.ready();
+  load();
+  // 面板开着的时候自动刷一下：这页看的是「现在群里在发生什么」，手动刷新会看不出热乎
+  setInterval(load, 15000);
+})();
+</script>
+</body>
+</html>

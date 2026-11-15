@@ -79,6 +79,17 @@ def check_entry(d: Path) -> None:
     # 而且插件里这种辅助方法很常见（拿群名片、拼转发节点），一律拦掉全是误报。
 
 
+def check_pages(d: Path) -> None:
+    """插件自带的页面：目录名就是 view 名，缺 index.html 面板里点进去就是 404。"""
+    for root_name in ("pages", "views"):
+        root = d / root_name
+        if not root.is_dir():
+            continue
+        for page_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+            if not (page_dir / "index.html").is_file():
+                errors.append(f"{d.name}: {root_name}/{page_dir.name} 缺 index.html")
+
+
 def main() -> int:
     dirs = sorted(p for p in PLUGIN_DIR.iterdir() if p.is_dir()) if PLUGIN_DIR.is_dir() else []
     if not dirs:
@@ -87,6 +98,7 @@ def main() -> int:
         check_metadata(d)
         check_schema(d)
         check_entry(d)
+        check_pages(d)
         ok.append(d.name)
 
     for name in ok:
