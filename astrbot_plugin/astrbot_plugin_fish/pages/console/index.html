@@ -58,6 +58,16 @@
   ul.list li:last-child { border-bottom: 0; }
   ul.list .who { font-family: ui-monospace, Menlo, monospace; font-size: 12px; min-width: 92px; }
   ul.list .cnt { color: var(--accent); font-variant-numeric: tabular-nums; min-width: 34px; }
+  ul.list li.clickable { cursor: pointer; }
+  ul.list li.clickable:hover { background: rgba(127,127,127,.08); }
+  .memtitle { display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: var(--dim); padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  ul.memlist { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow-y: auto; }
+  ul.memlist li { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  ul.memlist li:last-child { border-bottom: 0; }
+  .memrow { display: flex; gap: 8px; align-items: baseline; font-size: 12px; }
+  .memtl { font-size: 13px; margin-top: 4px; }
+  .memtext { font-size: 13px; color: var(--fg, inherit); white-space: pre-wrap; word-break: break-word; margin-top: 2px; opacity: .9; }
+  .memtags { margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap; }
   ul.list .samp { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .feed { max-height: 480px; overflow-y: auto; }
   .ev { display: flex; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
@@ -92,8 +102,13 @@
       <div id="groups"></div>
     </div>
     <div>
+      <h2>群友好感度</h2>
+      <div class="card" style="padding:6px 14px"><ul class="list" id="favor"></ul></div>
+
       <h2>群友记忆 <select id="mgroup"><option value="">全部群</option></select></h2>
       <div class="card" style="padding:6px 14px"><ul class="list" id="mem"></ul></div>
+      <div id="memdetail"></div>
+
     </div>
   </div>
 
@@ -222,13 +237,59 @@ function renderMem(d) {
   const rows = d.people || [];
   const KIND = { fact: "事实", preference: "偏好", plan: "计划", promise: "承诺",
                  relationship: "关系", event: "事件", note: "自记", plain: "流水" };
-  $("mem").innerHTML = rows.length ? rows.map((p) => `<li>
+  $("mem").innerHTML = rows.length ? rows.map((p) => `<li class="clickable"
+      data-gid="${esc(p.group_id || "")}" data-pid="${esc(p.person_id)}"
+      title="点开看这个人的记忆全文">
       <span class="who">${esc(p.person_id)}</span>
       <span class="cnt">${nf(p.count)}</span>
       <span class="tag">${KIND[p.type] || esc(p.type || "")}</span>
       <span class="samp" title="${esc(p.sample)}">${esc(p.sample || "")}</span>
       <span class="muted" style="margin-left:auto">${dur(p.updated_ago)}前</span>
     </li>`).join("") : '<li class="empty">这个范围里还没有记忆</li>';
+  // 绑事件而不是写 onclick 属性：group_id / person_id 都是外部数据，拼进 HTML 会被转义搞坏
+  $("mem").querySelectorAll("li.clickable").forEach((li) => {
+    li.addEventListener("click", () => loadMemDetail(li.dataset.gid, li.dataset.pid));
+  });
+}
+
+// 点开某个人：拉这个人所有记忆的**全文**（群里 /memory 只给条数，全文就靠这里看）
+async function loadMemDetail(gid, pid) {
+  const box = $("memdetail");
+  box.innerHTML = '<div class="card" style="padding:10px 14px">读取中…</div>';
+  let d;
+  try {
+    d = await get("memory_detail", { group_id: gid || "", person_id: pid });
+  } catch (e) {
+    box.innerHTML = `<div class="card" style="padding:10px 14px">读不到：${esc(String(e))}</div>`;
+    return;
+  }
+  const items = (d && d.items) || [];
+  const head = `<div class="memtitle">${esc(pid)} · ${nf(d.total || 0)} 条记忆`
+    + `<span class="muted" style="margin-left:auto;cursor:pointer" id="memclose">收起 ✕</span></div>`;
+  const body = items.length ? items.map((it) => `<li>
+      <div class="memrow">
+        <span class="tag">${esc(KIND[it.type] || it.type || "记忆")}</span>
+        <span class="muted">重要度 ${it.importance}</span>
+        <span class="muted" style="margin-left:auto">${dur(it.updated_ago)}前</span>
+      </div>
+      ${it.title ? `<div class="memtl">${esc(it.title)}</div>` : ""}
+      <div class="memtext">${esc(it.content || "")}</div>
+      ${(it.tags || []).length ? `<div class="memtags">${it.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</div>` : ""}
+    </li>`).join("") : '<li class="empty">没有明细</li>';
+  box.innerHTML = `<div class="card" style="padding:10px 14px">${head}<ul class="memlist">${body}</ul></div>`;
+  $("memclose").addEventListener("click", () => { box.innerHTML = ""; });
+}
+
+function renderFavor(d) {
+  const rows = d.people || [];
+  // 分数低的排前面：被怼到低分的人才需要人看一眼
+  $("favor").innerHTML = rows.length ? rows.slice(0, 20).map((p) => `<li>
+      <span class="who">${esc(p.person_id)}</span>
+      <span class="cnt">${(p.score ?? 0).toFixed(1)}</span>
+      <span class="tag ${p.score < 40 ? "hot" : p.score >= 80 ? "on" : ""}">${esc(p.tier)}</span>
+      <span class="samp">${esc(p.reason || "")}</span>
+      <span class="muted" style="margin-left:auto">${ago(p.updated_ago)}</span>
+    </li>`).join("") : '<li class="empty">还没有好感度记录</li>';
 }
 
 function renderFeed(d) {
@@ -254,6 +315,7 @@ async function load() {
     renderGroups(gs.groups || []);
     const gid = $("mgroup").value;
     renderMem(await get("memories", gid ? { group_id: gid } : {}));
+    renderFavor(await get("favor", gid ? { group_id: gid } : {}));
     renderFeed(await get("events", { limit: 80 }));
     $("stamp").textContent = "刷新于 " + new Date().toLocaleTimeString("zh-CN");
   } catch (e) {

@@ -57,7 +57,9 @@ class PanelApi:
             ("overview", self.overview, ["GET"], "控制台总览"),
             ("groups", self.groups, ["GET"], "群列表与冷热场"),
             ("memories", self.memories, ["GET"], "群友记忆排行"),
+            ("memory_detail", self.memory_detail, ["GET"], "单人记忆明细"),
             ("events", self.events, ["GET"], "最近交互事件"),
+            ("favor", self.favor, ["GET"], "群友好感度"),
             ("group", self.update_group, ["POST"], "改群级开关"),
         ]
         for name, handler, methods, desc in routes:
@@ -240,6 +242,96 @@ class PanelApi:
         } for r in rows]
         return _json_ok({"group_id": group_id, "people": people,
                          "total": len(people), "now": now})
+
+    async def memory_detail(self):
+        """单个人的全部记忆明细——这里才给正文。
+
+        排行接口只给一条样本（面板不摊原文），但群里 /memory 也只给条数了，
+        总得有个地方能看全，就是这里：点开某个人，逐条列 title + content + 标签。
+        """
+        group_id = (request.query.get("group_id") or "").strip()
+        person_id = (request.query.get("person_id") or "").strip()
+        if not person_id:
+            return _json_err("缺 person_id")
+        try:
+            limit = min(300, max(1, int(request.query.get("limit") or 100)))
+        except ValueError:
+            limit = 100
+        db = self._mem_db()
+        if not db.is_file():
+            return _json_ok({"items": [], "person_id": person_id})
+        sql = ("SELECT memory_id, group_id, person_id, title, content, memory_type, "
+               "importance, updated_at FROM fish_memory_records "
+               "WHERE is_deleted = 0 AND person_id = ?")
+        args: list = [person_id]
+        if group_id:
+            sql += " AND group_id = ?"
+            args.append(group_id)
+        sql += " ORDER BY importance DESC, updated_at DESC LIMIT ?"
+        args.append(limit)
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=3)
+            conn.row_factory = sqlite3.Row
+            try:
+                rows = [dict(r) for r in conn.execute(sql, args).fetchall()]
+                tags: dict[str, list] = {}
+                if rows:
+                    ids = [r["memory_id"] for r in rows]
+                    ph = ",".join("?" * len(ids))
+                    for mid, val in conn.execute(
+                        f"SELECT memory_id, tag_value FROM fish_memory_tags "
+                        f"WHERE memory_id IN ({ph})", ids):
+                        tags.setdefault(str(mid), []).append(str(val))
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            logger.warning("[fish] 控制台读记忆明细失败：%s", e)
+            return _json_err(f"读记忆库失败：{e}")
+        now = time.time()
+        items = [{
+            "memory_id": r["memory_id"],
+            "group_id": r["group_id"],
+            "title": r["title"] or "",
+            "content": r["content"] or "",
+            "type": r["memory_type"] or "",
+            "importance": round(float(r["importance"] or 0), 2),
+            "updated_ago": _ago(float(r["updated_at"] or 0), now),
+            "tags": tags.get(str(r["memory_id"]), []),
+        } for r in rows]
+        return _json_ok({"person_id": person_id, "group_id": group_id,
+                         "items": items, "total": len(items), "now": now})
+
+    def _favor_state(self) -> dict:
+        f = self._data_dir / "favor_state.json"
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    async def favor(self):
+        """好感度排行：分数低的排前面，最该看一眼的是那些被怼到低分的人。"""
+        gid = (request.query.get("group_id") or "").strip()
+        state = self._favor_state()
+        now = time.time()
+        rows = []
+        for g, persons in state.items():
+            if gid and g != gid:
+                continue
+            if not isinstance(persons, dict):
+                continue
+            for uid, rec in persons.items():
+                if not isinstance(rec, dict):
+                    continue
+                score = float(rec.get("s", 50))
+                rows.append({
+                    "group_id": g, "person_id": uid, "score": round(score, 1),
+                    "tier": "亲近" if score >= 80 else "熟人" if score >= 60 else "中立" if score >= 40 else "嫌弃",
+                    "reason": str(rec.get("n") or ""),
+                    "updated_ago": _ago(float(rec.get("t") or 0), now),
+                })
+        rows.sort(key=lambda r: r["score"])
+        return _json_ok({"people": rows, "now": now})
 
     async def events(self):
         try:

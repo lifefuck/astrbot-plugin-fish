@@ -61,27 +61,6 @@
     "type": "bool",
     "default": true
   },
-  "typo_prob": {
-    "description": "手滑打错字的概率",
-    "type": "float",
-    "default": 0.06,
-    "slider": {
-      "min": 0,
-      "max": 0.3,
-      "step": 0.01
-    },
-    "hint": "只作用于 8 字以上的句子，不动链接/@/数字。设 0 关闭。"
-  },
-  "typo_correct_prob": {
-    "description": "打错后补一句纠正的概率",
-    "type": "float",
-    "default": 0.3,
-    "slider": {
-      "min": 0,
-      "max": 1,
-      "step": 0.05
-    }
-  },
   "meme_enabled": {
     "description": "按情绪标签配表情包",
     "type": "bool",
@@ -345,5 +324,110 @@
     "type": "bool",
     "default": true,
     "hint": "有人戳它，先秒戳回去再回话。同一个 3 秒内只回戳一次，防止互戳死循环。"
+  },
+  "owner_qq": {
+    "type": "string",
+    "default": "",
+    "description": "主人 QQ，/off /on /memes 除群管外也放行；留空则只认群管"
+  },
+  "bot_ban_guard": {
+    "type": "bool",
+    "default": true,
+    "description": "机器人被禁言时不调模型（照样收得到消息，白烧 token）"
+  },
+  "density_guard": {
+    "type": "bool",
+    "default": true,
+    "description": "刷屏闸：两分钟内主动说过 N 条就不再主动搭腔（被 @ 不受限）"
+  },
+  "density_window_sec": {
+    "type": "int",
+    "default": 120,
+    "description": "刷屏闸的统计窗口（秒）"
+  },
+  "density_limit": {
+    "type": "int",
+    "default": 2,
+    "description": "窗口内最多主动说几条"
+  },
+  "connectors_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "被问到出处/最新消息时才联网检索"
+  },
+  "enable_games": {
+    "type": "bool",
+    "default": true,
+    "description": "文字游戏：数字炸弹、掷骰子、抽签"
+  },
+  "meme_battle_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "有人 @ 它还甩图时斗图反杀"
+  },
+  "media_parse_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "解析消息里的 B 站/GitHub/音乐/短视频链接"
+  },
+  "meme_pool_size": {
+    "type": "int",
+    "default": 30,
+    "description": "热梗池每轮注入几条"
+  },
+  "meme_rotation_sec": {
+    "type": "int",
+    "default": 1800,
+    "description": "热梗池多久换一轮（秒）"
+  },
+  "follow_window_sec": {
+    "type": "int",
+    "default": 300,
+    "description": "被叫过后免 @ 追问窗口（秒）"
+  },
+  "follow_max_turns": {
+    "type": "int",
+    "default": 5,
+    "description": "追问窗口里最多连续免 @ 几次"
+  },
+  "panel_event_buffer": {
+    "type": "int",
+    "default": 300,
+    "description": "控制台事件流缓冲多少条"
+  },
+  "admin_actions_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "自然语言处置人：群管说「把某人禁言十分钟」「踢了他」会真执行"
+  },
+  "yunzai_sync": {
+    "type": "bool",
+    "default": true,
+    "description": "/off 时把本群从云崽白名单摘掉，/on 加回来"
+  },
+  "yunzai_other_yaml": {
+    "type": "string",
+    "default": "",
+    "description": "云崽 other.yaml 路径，留空用默认 ~/projects/trss-yunzai/config/config/other.yaml"
+  },
+  "backup_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "记忆库与状态文件自动备份"
+  },
+  "backup_dir": {
+    "type": "string",
+    "default": "",
+    "description": "备份目录，留空落插件 data/backups"
+  },
+  "backup_keep": {
+    "type": "int",
+    "default": 7,
+    "description": "记忆库备份保留几份"
+  },
+  "backup_interval_hours": {
+    "type": "int",
+    "default": 24,
+    "description": "记忆库备份间隔（小时）"
   }
 }

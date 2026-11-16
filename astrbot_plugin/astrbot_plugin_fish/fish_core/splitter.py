@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import re
+
 # 句末停顿：只有这些位置才允许切开
 _SENT_END = "。！？!?…~～\n"
 # 次级停顿：一句流水账太长时按这些切
@@ -55,13 +57,24 @@ def _hard_cut(chunk: str, limit: int) -> list[str]:
     return pieces
 
 
+def _flatten(chunk: str) -> str:
+    """条内不留换行：QQ 里一条消息中间换行就是个缝，像粘贴的。"""
+    return re.sub(r"\s*\n+\s*", " ", chunk).strip()
+
+
 def split_reply(text: str, max_chars: int = 60, max_parts: int = 3, min_tail: int = 6) -> list[str]:
     """返回 1~max_parts 条待发文本。短于阈值时原样返回单条。"""
-    text = (text or "").strip()
+    text = (text or "").replace("\r", "").strip()
     if not text:
         return []
-    if max_chars <= 0 or len(text) <= max_chars:
-        return [text]
+    # 模型爱用空行隔开两句话，群里显示成一大段空白。
+    # 折成一个换行，让它变成正常的分条切点
+    text = re.sub(r"\n{2,}", "\n", text)
+    if max_chars <= 0:
+        return [_flatten(text)]
+    # 带换行就不能早退：短句里塞了换行，也必须切开
+    if "\n" not in text and len(text) <= max_chars:
+        return [_flatten(text)]
 
     chunks: list[str] = []
     for sent in _guarded(text, _SENT_END):
@@ -93,7 +106,7 @@ def split_reply(text: str, max_chars: int = 60, max_parts: int = 3, min_tail: in
         # 条数超了就把多出来的全塞进最后一条，宁可长一点也别刷屏
         parts = parts[: max_parts - 1] + ["".join(parts[max_parts - 1:])]
 
-    return [p.strip() for p in parts if p.strip()]
+    return [q for q in (_flatten(p) for p in parts) if q]
 
 
 def plan_gaps(n_parts: int, gap_min: float = 0.6, gap_max: float = 1.5, rng=None) -> list[float]:

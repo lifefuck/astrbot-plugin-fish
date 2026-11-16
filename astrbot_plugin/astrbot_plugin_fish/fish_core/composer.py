@@ -19,10 +19,13 @@ _style_cache = {"mtime": 0.0, "data": []}
 # 云崽面板指令清单：只有真在问用法时才带，平时一个字都不发
 # 群里别 @ 别人：行首/空格后的 @昵称整段削掉。中文名和后面的正文之间常常没空格，
 # 所以只吃「@ + 最多 12 个非空白字符」，剩下的正文留给模型原话来接
-_AT_MENTION = re.compile(r"(^|[\s，,])[@＠][^\s，。！？、,.!?：:]{1,12}")
+# 只在 @昵称 后面紧跟空白/标点/行尾时才削。以前允许吃到 12 个字，
+# 「@张三你说得对」会被整句删空，然后 main 回退发原文，等于白削
+_AT_MENTION = re.compile(r"(^|[\s，,])[@＠][^\s，。！？、,.!?：:]{1,12}(?=[\s，。！？、,.!?：:]|$)")
 # 「我没艾特你啊」「不是要艾特」这类自我辩解的整句，直接删。它是在解释格式，
 # 不是在跟人说话；越解释越显得机器
-_AT_META_SENTENCE = re.compile(r"[^。！？!?\n]*?(?:我)?(?:没有|没|不是)[^。！？!?\n]{0,3}艾特[^。！？!?\n]*[。！？!?]?")
+# 断句符里必须带逗号：不加的话「我不是要艾特你，别误会」会连后半句一起删掉
+_AT_META_SENTENCE = re.compile(r"[^。！？!?\n，,、]{0,20}?(?:我)?(?:没有|没|不是)[^。！？!?\n，,、]{0,3}艾特[^。！？!?\n，,、]{0,20}[。！？!?]?")
 
 _GAME_WORDS = ("原神", "星铁", "崩铁", "绝区零", "鸣潮", "异环")
 _HOW_WORDS = ("怎么", "如何", "在哪", "哪里", "帮助")
@@ -118,6 +121,7 @@ def build_user_prompt(
     is_private: bool,
     now: float | None = None,
     vision_desc: str = "",
+    media_hint: str = "",
     social_hint: str = "",
     cross_hint: str = "",
 ) -> str:
@@ -131,7 +135,13 @@ def build_user_prompt(
 
     if vision_desc:
         # 图里说了什么必须摆在「当前这句」后面：放最前面模型会当成背景设定，答的时候当没看见
-        parts.append(f"【他这张图里】：{vision_desc}")
+        parts.append(f"【你自己看到的画面】（就当是自己亲眼看见的，别复述画面内容，直接说你的反应）：{vision_desc}")
+
+    if media_hint:
+        # 链接/视频解析结果单独一块。以前塞进 vision_desc，模型读到的是
+        # 「他这张图里：【这条链接的内容】BV 视频《PCL不能下载》」，语义拧着，
+        # 于是它宁可问「这BV号是啥视频」也不肯用已经查到的标题
+        parts.append(f"【他发的这条链接的内容】（已经解析出来了，直接当已知信息用，别再问是什么）：{media_hint}")
 
     parts.append(f"\n【当前这句】：{sender_nick}（{sender_uid}）：{latest_line or '（只@了你，没打字）'}")
     if is_at:
@@ -177,7 +187,14 @@ def anti_repeat_hint(recent_bot_replies: list[str]) -> str:
 
 # 模型偶尔会模仿工具调用语法，把整段 [send_message_to_user]…[/send_message_to_user] 吐进正文
 _FAKE_TOOL_TAG = re.compile(r"\[/?(?:send_message_to_user|send_msg|send_group_msg|reply|message)\s*[^\]]*\]", re.I)
-_BRACKET_ACTION = re.compile(r"[（(][^（()）]{1,12}[)）]")
+_BRACKET_ACTION = re.compile(r"[（(]([^（()）]{1,12})[)）]")
+# 只有这些「动作旁白」词才算噪音。以前按长度无差别删，把
+# 「Python（3.11）」「我（真的）觉得（不是）这样」这种正常括号也削了
+_BRACKET_WORDS = (
+    "笑", "叹", "摊手", "耸肩", "扶额", "白眼", "无语", "沉默", "思考", "点头",
+    "摇头", "皱眉", "撇嘴", "瞪", "咳", "摸头", "捂脸", "鼓掌", "比心", "眨眼",
+    "歪头", "挠头", "尴尬", "汗", "佩服", "愣", "顿", "抱", "哭", "气",
+)
 _MEME_LEFTOVER = re.compile(r"[\[【［]\s*MEME\s*[:：][^\]】］\n]*[\]】］]?", re.IGNORECASE)
 
 
@@ -192,11 +209,24 @@ def _drop_english_meta(text: str) -> str:
     for line in (text or "").splitlines():
         s = line.strip()
         if len(s) >= 12:
+            has_cjk = any("\u4e00" <= ch <= "\u9fff" or "\u3040" <= ch <= "\u30ff" for ch in s)
             letters = sum(1 for ch in s if ch.isascii() and ch.isalpha())
-            if letters / len(s) > 0.6:
+            # 只要句子里有中文就是人话（「这个 bug 是 NullPointerException 导致的」），
+            # 只有整行纯英文才判成模型自言自语
+            if not has_cjk and letters / len(s) > 0.6:
                 continue
         kept.append(line)
     return "\n".join(kept)
+
+
+def _strip_bracket_actions(text: str) -> str:
+    """只削动作旁白括号，正常括号原样留着。"""
+    def _repl(m):
+        inner = m.group(1)
+        if len(inner) <= 6 and any(w in inner for w in _BRACKET_WORDS):
+            return ""
+        return m.group(0)
+    return _BRACKET_ACTION.sub(_repl, text)
 
 
 def sanitize_reply(text: str) -> str:
@@ -209,15 +239,30 @@ def sanitize_reply(text: str) -> str:
     t = _MEME_LEFTOVER.sub("", t)
     t = _FAKE_TOOL_TAG.sub("", t)
     t = _drop_english_meta(t)
+    if not t.strip():
+        # 整条都是英文独白：这种确实一个字的不能发，直接判空
+        return ""
     t = re.sub(r"\*\*(.+?)\*\*", r"\1", t)
     # 标签嵌在粗体里时（**[MEME:得意]**），剥完标签会剩下孤零零的 ****，
     # 先按粗体替换一次之后还剩连续星号就整段删掉
     t = re.sub(r"\*{2,}", "", t)
     t = re.sub(r"`([^`]*)`", r"\1", t)
-    t = _BRACKET_ACTION.sub("", t)
+    t = _strip_bracket_actions(t)
     # 群聊里不接受 @ 别人：模型学到的群表达样例里没有 @，但它会自作聪明加一个
     # 「@张三 你说的对」，在群里就是强行点名，很烦。行首、行尾、整句的 @ 一起削
     t = _AT_MENTION.sub("", t)
     t = _AT_META_SENTENCE.sub("", t)
     t = re.sub(r"[ \t]+", " ", t)
-    return t.strip()
+    # 连续换行折掉：分条交给 splitter，出口不留空行
+    t = re.sub(r"\n{2,}", "\n", t)
+    # 削掉句子后留下的孤立标点：「我不是要艾特你，别误会」会剩「，别误会」
+    t = re.sub(r"^[，,、。；;：:\s]+", "", t)
+    out = t.strip()
+    if out:
+        return out
+    # 削到一字不剩说明规则打偏了，不是模型的问题：退回「只剥标签」的版本。
+    # 之前这里返回空串，main 又拿未清洗原文兜底，@ 和英文独白反而漏了出去
+    fallback = _FAKE_TOOL_TAG.sub("", _MEME_LEFTOVER.sub("", text or ""))
+    fallback = re.sub(r"\*{2,}", "", fallback).strip()
+    # 只剩星号/标点等于什么都没有，别把 **** 发进群
+    return fallback if re.search(r"\w", fallback) else ""
