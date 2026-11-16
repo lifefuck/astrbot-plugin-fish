@@ -1,10 +1,10 @@
 # astrbot_plugin_fish —— 把「小鲸鱼」的对话能力搬进 AstrBot
 
-从仓库根目录那套自研机器人移植。**不改 AstrBot 源码**，全部逻辑在插件目录内，`git -C /path/to/astrbot status --porcelain` 保持干净。
+从自研机器人 `~/projects/qq-deepseek-bot` 移植。**不改 AstrBot 源码**，全部逻辑在插件目录内，`git -C ~/projects/astrbot status --porcelain` 保持干净。
 
-- 插件目录：`data/plugins/astrbot_plugin_fish/`（AstrBot 根目录下）
+- 插件目录：`~/projects/astrbot/data/plugins/astrbot_plugin_fish/`
 - 运行状态：`data/fish_memory.db`（记忆）、`data/affect_state.json`（心境）、`data/style_fewshot.json`（群表达样例）、`data/prompt_archive/`（调试用 prompt 存档）、`data/cross_group_topics.json`（跨群话题短摘要）、`data/peer_bots.json`（别的机器人 QQ 名单）
-- 运行时配置：`data/config/astrbot_plugin_fish_config.json`（AstrBot 自己生成，**带 BOM**，读写一律 `utf-8-sig`）
+- 运行时配置：`~/projects/astrbot/data/config/astrbot_plugin_fish_config.json`（AstrBot 自己生成，**带 BOM**，读写一律 `utf-8-sig`）
 
 ## 1. 能力对照表
 
@@ -16,7 +16,6 @@
 | 长期记忆（事实/偏好/计划/事件 7 类规则抽取 + 召回） | `services/fish_memory.py` | `fish_core/fish_memory.py`（原件复制） | 每条群消息自动感知；回话前 `recall(top_k=2)` |
 | 群表达风格学习 | `services/style_learner.py` | `fish_core/style_learner.py` | `observe()` 逐条累积，池上限 200 |
 | 反模板（起手/收尾撞车、重复语气词、复述式开场） | `services/anti_template.py` | `fish_core/anti_template.py` | 出口钩子里 `match→reshape→trim_particle→strip_echo_opener` |
-| 手滑错字 + 自纠 | `services/typo.py` | `fish_core/typo.py` | 改完再补一句「改一下，X」 |
 | 接话质量分 / 时机修正 | `bot.py: score_message_quality` + `INTERJECT_*` 词表、`services/interject_planner.py` | `fish_core/interject_score.py` + `fish_core/interject_planner.py` | 抽成纯函数，阈值 `0.30 + 0.32*desire` |
 | 表情包选图 | `meme_catalog.py` + `meme-pack/` | `fish_core/meme_catalog.py` + 符号链接 `meme-pack` | 138 张；`[MEME:xx]` 标签在出口处剥掉，只发图不发标签 |
 | 该不该开口 | `handlers/group.py` + `bot.py` 判定段 | `main.py: on_group()` | 见下节 |
@@ -52,7 +51,7 @@ AstrBot 默认只把「@我 / `ab!` 前缀 / 引用我 / 私聊 / 插件 filter 
 出口（`on_decorating_result` → `after_message_sent`）：
 
 ```
-清洗 → 反模板 → 手滑 → 拆条（>60 字拆 2~3 条）
+清洗 → 反模板 → 拆条（>60 字拆 2~3 条）
      → 斗图闸（一回合最多一张）→ 先发第一条
      → after_message_sent 里按 0.6~1.5s 随机间隔补发其余条 → 最后附图
 ```
@@ -90,8 +89,6 @@ journalctl --user -u astrbot -f --no-pager | grep fish
 | `interject_cooldown_sec` | `300` | 说完一句后的硬冷却。**它也同时改写 `interject_planner.COOLDOWN_SEC`**，否则会出现「硬冷却放行、软权重还按 300 秒打折」的矛盾 |
 | `reply_when_at` | `true` | 被 @ 是否必回 |
 | `reply_private` | `true` | 私聊是否用同一套人格 |
-| `typo_prob` | `0.06` | 手滑概率，只改长句、不碰链接/@/数字 |
-| `typo_correct_prob` | `0.30` | 手滑后再补一句纠正的概率 |
 | `meme_enabled` | `true` | 是否配表情包 |
 | `timeline_size` | `12` | 塞进 prompt 的群聊条数 |
 | `memory_recall_topk` | `2` | 每人召回几条长期记忆 |
@@ -126,7 +123,7 @@ journalctl --user -u astrbot -f --no-pager | grep fish
 验证手段：自写 `scripts/inject.py` 冒充 NapCat 连 `ws://127.0.0.1:6199/ws`（AstrBot 的 OneBot 反向 WS 服务端），往假群 `999999` 注入事件，机器人的 `send_group_msg` 回到这条测试连接上。
 
 ```bash
-cd /path/to/astrbot
+cd ~/projects/astrbot
 cp data/plugins/astrbot_plugin_fish/scripts/test_config.json data/config/astrbot_plugin_fish_config.json
 systemctl --user restart astrbot && sleep 13
 ./.venv/bin/python data/plugins/astrbot_plugin_fish/scripts/inject.py                     # 全量（约 6 分钟）
@@ -134,7 +131,7 @@ systemctl --user restart astrbot && sleep 13
 ./.venv/bin/python data/plugins/astrbot_plugin_fish/scripts/inject.py --only long meme    # 长回答拆条 + 斗图闸
 ```
 
-`test_config.json` 就是下面这轮实测用的参数（`interject_cooldown_sec: 30`、`typo_prob: 0`、`debug_dump_prompt: true`），生产参数见第 4 节。
+`test_config.json` 就是下面这轮实测用的参数（`interject_cooldown_sec: 30`、`debug_dump_prompt: true`），生产参数见第 4 节。
 
 ### 5.1 真实发送内容（`send_group_msg` 原样）
 
@@ -209,21 +206,10 @@ Prepare to send - 张三/10001: 面试啊，明天下午的
 --- 2. 反模板：起手撞车 ---
 命中原因 : opening
 削形后   : 我昨天就说过，这事早定了
---- 4. 手滑与纠正（prob=1.0 强制触发）---
-打错后   : 我觉得应该已经知道了，现在还是先一起看看题
-纠错话术 : 手滑，看问
-```
-
-手滑链路在真实运行里也验过（临时把 `typo_prob`、`typo_correct_prob` 都设 1.0）：
-
-```
-<- 动作：send_group_msg msg='就潜水呗，偶尔冒两颗泡损人两句，然候……'
-<- 动作：send_group_msg msg='改一下，然后'
-```
 
 ### 5.5 新增六项能力的实测（注入法，不往真群发）
 
-> 坑先记在这：注入事件的 `self_id` **必须是假号**（`1000000001`），用机器人真号时带 `@` 的事件会被
+> 坑先记在这：注入事件的 `self_id` **必须是假号**（`1008600001`），用机器人真号时带 `@` 的事件会被
 > aiocqhttp 适配器当成"自己发的"直接吞掉，永远进不了 pipeline；`message_id` 每条唯一。
 
 **① 发图 → Gemini 白描 → 进 prompt**
@@ -332,7 +318,7 @@ URL/@/5 位以上长号码在写入前就洗掉。
 ./.venv/bin/python data/plugins/astrbot_plugin_fish/scripts/selfcheck.py
 ```
 
-覆盖 12 段：标签剥离/清洗、反模板三种命中、口癖与复述开场、强制手滑+纠正话术、5 组质量分与门槛对比、
+覆盖 12 段：标签剥离/清洗、反模板三种命中、口癖与复述开场、5 组质量分与门槛对比、
 拆条（长/中/碎片三例）、斗图闸四种情形、视觉降级链、judge 结论解析（含坏 JSON 兜底）、跨群摘要清洗与自群屏蔽、
 机器人识别、时间/身份锚点。不需要 AstrBot 进程、不联网。
 
@@ -343,7 +329,7 @@ URL/@/5 位以上长号码在写入前就洗掉。
 #    把 data/config/astrbot_plugin_fish_config.json 里 "enabled" 改 false 并重启
 # 2) 或者整个移除
 systemctl --user stop astrbot
-mv /path/to/astrbot/data/plugins/astrbot_plugin_fish ~/astrbot_plugin_fish.bak
+mv ~/projects/astrbot/data/plugins/astrbot_plugin_fish ~/astrbot_plugin_fish.bak
 systemctl --user start astrbot
 ```
 

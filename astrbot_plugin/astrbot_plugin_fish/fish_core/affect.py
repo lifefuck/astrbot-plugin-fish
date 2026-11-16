@@ -20,6 +20,8 @@ import logging
 import os
 import random
 
+import backup
+
 _logger = logging.getLogger(__name__)
 import re
 import time
@@ -72,25 +74,51 @@ def attach(writer=None, path: str = ""):
     load()
 
 
+def _norm(item: dict) -> dict:
+    """按 _DEFAULT 的类型逐字段归一化。
+
+    直接 {**_DEFAULT, **v} 会把 {"care": null} 原样吃进来，之后
+    on_group_message 里拿 None 去迭代就抛 TypeError —— 一条坏字段能让她
+    整个群哑掉。宁可这一项回默认值。
+    """
+    out = dict(_DEFAULT)
+    for k, dv in _DEFAULT.items():
+        v = item.get(k, dv)
+        if isinstance(dv, bool):
+            out[k] = bool(v)
+        elif isinstance(dv, (int, float)):
+            try:
+                out[k] = float(v)
+            except (TypeError, ValueError):
+                out[k] = dv
+        elif isinstance(dv, list):
+            out[k] = list(v) if isinstance(v, (list, tuple)) else list(dv)
+        elif isinstance(dv, str):
+            out[k] = "" if v is None else str(v)
+        else:
+            out[k] = v
+    return out
+
+
 def load():
-    global _state, _dirty
+    global _state, _dirty, _readonly
+    _readonly = False
     if not _path or not os.path.exists(_path):
         return
-    try:
-        with open(_path, encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            _state = {str(k): {**_DEFAULT, **v} for k, v in data.items() if isinstance(v, dict)}
-        _dirty = False
-    except Exception:
-        # 坏文件不该拖垮 bot：忽略旧状态，从默认值重新开始
+    data = backup.load_json_recover(_path)
+    if not isinstance(data, dict):
         _state = {}
+        _readonly = True
+        _logger.warning("心境状态读不出来（含备份），本次运行只读不落盘：%s", _path)
+        return
+    _state = {str(k): _norm(v) for k, v in data.items() if isinstance(v, dict)}
+    _dirty = False
 
 
 def save(force: bool = False):
     """攒 30 秒写一次：每条消息都落盘没必要，掉电丢几分钟心情无伤大雅。"""
     global _last_save, _dirty
-    if not _path or not _writer:
+    if not _path or not _writer or _readonly:
         return
     now = time.time()
     if not force and (not _dirty or now - _last_save < 30):

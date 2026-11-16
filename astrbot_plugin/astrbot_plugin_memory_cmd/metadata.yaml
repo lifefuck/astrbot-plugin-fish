@@ -1,6 +1,6 @@
 name: astrbot_plugin_memory_cmd
 display_name: 记忆查询 /memary
-desc: 把小鲸鱼的 /memary 搬过来，按群隔离查看记忆库，只读。
-version: 1.0.0
+desc: 群友记忆与好感度总结，合并转发展示；普通群友只看自己那份。
+version: 1.2.0
 author: life
-repo: https://github.com/lifefuck/astrbot-plugin-fish
+repo: "https://github.com/lifefuck/astrbot-plugin-fish"
