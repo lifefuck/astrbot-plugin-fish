@@ -101,7 +101,16 @@ def build_system_prompt(base_persona: str, bot_nick: str, bot_qq: str, group_id:
         "\n【输出约束】：只发要发进群的那句话本身。不要写 [send_message_to_user]、[reply] 这类标签，"
         "不要输出英文思考过程，不要解释你在做什么，不要用 Markdown。"
         "不要 @ 任何人（群里说话不需要点名，直接说事）；"
-        "也不要谈论自己有没有艾特人、不要解释发送格式。\n"
+        "也不要谈论自己有没有艾特人、不要解释发送格式。"
+        # 群友老拿「好感度/记忆/人设」打趣，模型就顺着把自己当程序介绍，
+        # 一开口「我词条里写的」「好感度拉满」人设立刻塌
+        "不要提好感度、记忆库、评分、词条、插件、模型、参数、测试这些内部概念，"
+        "也不要主动提「AI」「机器人」「程序」，哪怕对方这么问也别接着自嘲"
+        "（实测回成「怎么突然这么肉麻，是不是跟AI聊没意思了」，一句话就把人从戏里踢出来）。"
+        "你就是个在群里聊天的人。"
+        # 「咋了，xxx」这种开场白模型特别爱用，57 条回复里 7 条这么起头，
+        # 连着看就是复读机。一次对话里至多出现一次
+        "开场别老用「咋了」「在」「喂」这类词，同一场聊天里最多用一次。\n"
     )
     return f"{identity}{base_persona}{rule}"
 
@@ -197,6 +206,41 @@ _BRACKET_WORDS = (
 )
 _MEME_LEFTOVER = re.compile(r"[\[【［]\s*MEME\s*[:：][^\]】］\n]*[\]】］]?", re.IGNORECASE)
 
+# 出口兜底：模型手滑写出来的表情标签五花八门——[MEME]、[MEME 嘲讽]、[MEME_嘲讽]、
+# [色:嘲讽]、(MEME:嘲讽)、[开心]、以及嵌套括号留下的 ] / []。上游正则永远追不完，
+# 所以在最后一道清洗里按「括号 + 内容像情绪标签」整段削掉。
+_MOOD_WORDS = "卖萌|得意|嘲讽|震惊|愤怒|委屈|无奈|干饭|开心|高兴|难过|生气|色|汗|笑|害羞|期待"
+_NESTED_TAG = re.compile(r"[\[【［][^\[\]【】［］\n]{0,16}[\[【［][^\[\]【】［］\n]{0,16}[\]】］][\]】］]")
+_LOOSE_TAG = re.compile(
+    r"[\[【［(（]\s*(?:(?:MEME|MEMO|EMOJI|EMOTION|EMOTE)[\s:：_\-]*)?"
+    r"(?:%s)(?:[\s:：_\-]*(?:%s)?)?\s*[\]】］)）]" % (_MOOD_WORDS, _MOOD_WORDS),
+    re.IGNORECASE,
+)
+_BARE_TAG = re.compile(r"[\[【［(（]\s*(?:MEME|MEMO|EMOJI|EMOTION|EMOTE)\s*[\]】］)）]", re.IGNORECASE)
+_EMPTY_BRACKET = re.compile(r"[\[【［]\s*[\]】］]")
+
+
+def _strip_meme_junk(text: str) -> str:
+    """把各种写歪的表情标签削干净，不留 ] / [] 这种残渣。
+
+    只认「括号里只有情绪词或 MEME 前缀」的，正常括号（Python（3.11）、（笑）之外的
+    技术括号）不会被误伤：括号里还有别的字就不匹配。
+    """
+    t = text or ""
+    for _ in range(3):   # 嵌套的可能要削好几轮
+        before = t
+        t = _NESTED_TAG.sub("", t)
+        t = _LOOSE_TAG.sub("", t)
+        t = _BARE_TAG.sub("", t)
+        t = _EMPTY_BRACKET.sub("", t)
+        if t == before:
+            break
+    # 削完标签留下的孤立右括号：「就这？]」这种；整条只剩括号的也一并清掉
+    t = re.sub(r"(?<=[？?！!。.…~～])\s*[\]】］]+", "", t)
+    if not re.sub(r"[\s\[\]【】［］()（）]", "", t):
+        return ""
+    return t
+
 
 def _drop_english_meta(text: str) -> str:
     """删掉模型漏出来的英文思考行。
@@ -236,6 +280,8 @@ def sanitize_reply(text: str) -> str:
     这里保持同样的处理顺序。
     """
     t = text or ""
+    # 先削嵌套/变体再削标准标签：反过来的话 [MEME:[嘲讽]] 会被削成孤零零的 ]
+    t = _strip_meme_junk(t)
     t = _MEME_LEFTOVER.sub("", t)
     t = _FAKE_TOOL_TAG.sub("", t)
     t = _drop_english_meta(t)

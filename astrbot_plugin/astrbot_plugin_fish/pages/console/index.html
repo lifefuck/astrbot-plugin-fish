@@ -42,6 +42,8 @@
   .tag { border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; font-size: 11px; color: var(--dim); }
   .tag.on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
   .tag.hot { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+  /* 静默 / 危险状态用红色区分：光靠「关」一个灰标签，看不出是群里 /off 还是面板关的 */
+  .tag.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); }
   .sw { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; font-size: 12px; }
   .sw input { accent-color: var(--accent); }
   .slider { display: inline-flex; align-items: center; gap: 8px; }
@@ -145,6 +147,25 @@ function esc(s) {
 
 let view = null;   // AstrBot 的桥接对象，ready 之前不能发请求
 let groupsCache = [];
+// 全局插话意愿（后端实际生效值）。群卡片没单独设过 override 时要显示它：
+// 以前这里写死 0.3，配置里改成 0.45 之后滑块还停在 0.30，看着像配置没生效。
+let globalDesire = 0.3;
+
+// 记忆类型的中文名。必须放在模块顶层：它同时被 renderMem 和 loadMemDetail 用，
+// 原来写在 renderMem 函数体里，loadMemDetail 是另一个函数，作用域里根本看不到
+// const KIND → 一点开就 ReferenceError，明细框永远停在「读取中…」
+const KIND = { fact: "事实", preference: "偏好", plan: "计划", promise: "承诺",
+               relationship: "关系", event: "事件", note: "自记", plain: "流水" };
+
+// 群状态的显示文案。后端把静默 / override / 白名单三处合并后给 state_reason，
+// 前端照着翻译：只说「已关」的话，人分不清是自己点在面板关的，还是群里 /off 过
+const REASON = {
+  on: ["接话中", "on"],
+  muted: ["静默中", "bad"],
+  override_off: ["面板关闭", ""],
+  override_on_unlisted: ["override 强开·不在白名单", "hot"],
+  not_whitelisted: ["不在白名单", ""],
+};
 
 // 桥接层已经把 {status, data} 拆开过一层：拿到的是插件自己返回的 payload 本身。
 // 但不同版本可能有拆有不拆，两种形状都认，省得上游一改这边整页空白。
@@ -163,6 +184,8 @@ async function post(path, body) {
 
 function renderStats(d) {
   const sw = d.switches || {};
+  // 先记下后端实际生效的全局意愿，群卡片的滑块默认值用它（别再写死 0.3）
+  if (sw.interject_desire != null) globalDesire = Number(sw.interject_desire);
   $("stats").innerHTML = [
     ["运行", dur(d.uptime)],
     ["生效群", `${nf(d.groups_runtime)}<small>个</small>`],
@@ -180,23 +203,29 @@ function renderGroups(list) {
     const ov = g.override || {};
     const desire = ov.interject_desire == null ? "" : ov.interject_desire;
     const m = g.mind || {};
+    // 状态按后端 state_reason 翻译，别只拿 enabled 猜：同样显示「关」，原因可能是
+    // 静默、面板 override，或者根本不在白名单，三种原因对应三种不同的处理动作
+    const st = REASON[g.state_reason] || (g.enabled ? REASON.on : ["已关", ""]);
     return `<div class="card ${g.enabled ? "" : "off"}" data-gid="${esc(g.group_id)}">
       <div class="row">
         <span class="gid">${esc(g.group_id)}</span>
         <span class="tags">
-          <span class="tag ${g.enabled ? "on" : ""}">${g.enabled ? "接话中" : "已关"}</span>
+          <span class="tag ${st[1]}">${st[0]}</span>
           <span class="tag">缓冲 ${nf(g.buffered_msgs)} 条</span>
           <span class="tag ${g.interject_last_hour ? "hot" : ""}">近1h 插话 ${nf(g.interject_last_hour)}</span>
           <span class="tag">记忆 ${nf(g.memory)}</span>
         </span>
         <span class="sp" style="flex:1"></span>
-        <label class="sw"><input type="checkbox" data-act="enabled" ${g.enabled ? "checked" : ""}>启用</label>
+        ${g.has_override ? `<button data-act="reset" title="删掉本群的 override，回到跟随白名单/全局配置">重置</button>` : ""}
+        <label class="sw" ${g.muted ? 'title="该群被群里 /off 静默，面板改不了，请在群里发 /on"' : ""}><input
+          type="checkbox" data-act="enabled" ${g.enabled ? "checked" : ""}
+          ${g.muted ? "disabled" : ""}>启用</label>
       </div>
       <div class="row" style="margin-top:8px">
         <span class="slider">
           <span class="muted">意愿</span>
-          <input type="range" min="0" max="1" step="0.05" data-act="desire" value="${desire === "" ? 0.3 : desire}">
-          <b data-val>${desire === "" ? "默认" : Number(desire).toFixed(2)}</b>
+          <input type="range" min="0" max="1" step="0.05" data-act="desire" value="${desire === "" ? globalDesire : desire}">
+          <b data-val>${desire === "" ? `默认 ${Number(globalDesire).toFixed(2)}` : Number(desire).toFixed(2)}</b>
         </span>
         <span class="muted">最近消息 ${ago(g.last_msg_ago)} · 上次回话 ${ago(g.last_bot_reply_ago)}</span>
         <span class="sp" style="flex:1"></span>
@@ -217,7 +246,18 @@ function renderGroups(list) {
     const out = card.querySelector("[data-val]");
     cb.onchange = async () => {
       try { await post("group", { group_id: gid, key: "enabled", value: cb.checked }); load(); }
-      catch (e) { alert(e.message); cb.checked = !cb.checked; }
+      catch (e) {
+        // 后端会拒掉两类操作：群不在白名单、群还在静默中。原样弹出来，
+        // 不然用户只看到开关弹回去，以为面板抽风
+        alert(e.message); cb.checked = !cb.checked;
+      }
+    };
+    // 「重置」= 删掉这个群的整条 override（可选字段级重置见后端 group_reset 的 key 参数）
+    const rb = card.querySelector('[data-act="reset"]');
+    if (rb) rb.onclick = async () => {
+      if (!confirm(`删掉群 ${gid} 的面板 override？删完按白名单和全局配置生效`)) return;
+      try { await post("group_reset", { group_id: gid }); load(); }
+      catch (e) { alert(e.message); }
     };
     rg.oninput = () => { out.textContent = Number(rg.value).toFixed(2); };
     rg.onchange = async () => {
@@ -235,8 +275,8 @@ function renderGroups(list) {
 
 function renderMem(d) {
   const rows = d.people || [];
-  const KIND = { fact: "事实", preference: "偏好", plan: "计划", promise: "承诺",
-                 relationship: "关系", event: "事件", note: "自记", plain: "流水" };
+  // KIND 已经提到模块顶层了（loadMemDetail 也要用），这里不要再声明一份：
+  // 局部 const 一旦回来就会把顶层那份遮住，明细那边照样炸
   $("mem").innerHTML = rows.length ? rows.map((p) => `<li class="clickable"
       data-gid="${esc(p.group_id || "")}" data-pid="${esc(p.person_id)}"
       title="点开看这个人的记忆全文">

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -61,6 +62,7 @@ class PanelApi:
             ("events", self.events, ["GET"], "最近交互事件"),
             ("favor", self.favor, ["GET"], "群友好感度"),
             ("group", self.update_group, ["POST"], "改群级开关"),
+            ("group_reset", self.group_reset, ["POST"], "删群级 override"),
         ]
         for name, handler, methods, desc in routes:
             ctx.register_web_api(f"{API_PREFIX}/{name}", handler, methods, desc)
@@ -115,6 +117,51 @@ class PanelApi:
             "types": types,
         }
 
+    # ---------------- 生效状态 ----------------
+    def _whitelist_groups(self) -> list[str]:
+        """配置里的群白名单，统一成去空白的字符串列表。
+
+        配置项允许写成 "[\\"*\\"]" 也可能被人手写成 "123,456" 逗号串（main.py 的
+        _group_allowed 两种都认），面板要做权限判断就必须用同一套解析，
+        否则会出现「面板说没权限、插件其实在接话」的错位。
+        """
+        groups = self.p.cfg.get("enabled_groups") or []
+        if isinstance(groups, str):
+            groups = [g for g in re.split(r"[,，\s]+", groups) if g]
+        return [str(g).strip() for g in groups if str(g).strip()]
+
+    def _in_whitelist(self, gid: str) -> bool:
+        groups = self._whitelist_groups()
+        return "*" in groups or str(gid) in groups
+
+    def _group_state(self, gid: str) -> dict:
+        """把「静默 / override / 白名单」三处状态合成本群真正生效的结果。
+
+        main.py 里这三处判断是分开的：_is_muted 先短路，_group_allowed 再看
+        override.enabled，最后才退回白名单。面板如果只把 _group_allowed 当状态，
+        群里 /off 过的群会照样显示「接话中」——开关看着坏了，其实是两个状态源没合并。
+        """
+        ov = (getattr(self.p, "_group_overrides", {}) or {}).get(str(gid), {}) or {}
+        whitelisted = self._in_whitelist(gid)
+        muted = bool(self.p._is_muted(gid))
+        allowed = bool(self.p._group_allowed(gid))
+        enabled = allowed and not muted
+        if muted:
+            # 静默优先级最高：/off 之后连 @ 都不回
+            reason = "muted"
+        elif ov.get("enabled") is False:
+            reason = "override_off"
+        elif enabled and not whitelisted:
+            # 历史脏数据：override 里存着 enabled=true，效果是绕过白名单偷偷接话。
+            # 单独报出来，让人知道这个群为什么会「莫名在说话」
+            reason = "override_on_unlisted"
+        elif enabled:
+            reason = "on"
+        else:
+            reason = "not_whitelisted"
+        return {"enabled": enabled, "muted": muted,
+                "whitelisted": whitelisted, "reason": reason}
+
     def _known_groups(self) -> list[str]:
         """运行期见过的群 + 白名单写的群 + 有 override 的群，合起来才是「面板该显示的群」。"""
         seen: list[str] = []
@@ -122,6 +169,8 @@ class PanelApi:
             list(getattr(self.p, "_groups", {}).keys()),
             list(self._affect_state().keys()),
             list(getattr(self.p, "_group_overrides", {}).keys()),
+            # 只在群里 /off 过、之后再没动静的群，不加这一行面板里就找不到它了
+            list(getattr(self.p, "_mute_state", {}).keys()),
         ):
             for g in src:
                 g = str(g)
@@ -144,8 +193,9 @@ class PanelApi:
             "started_at": float(getattr(self.p, "_started", now)),
             "bot_nickname": str(cfg.get("bot_nickname") or ""),
             # 「生效群」按白名单口径算：_groups 只有收到过消息才会建，进程刚起时是 0，
-            # 但面板上明明列着八个群，显示 0 会让人以为白名单没生效
-            "groups_runtime": len([g for g in self._known_groups() if self.p._group_allowed(g)]),
+            # 但面板上明明列着八个群，显示 0 会让人以为白名单没生效。
+            # 用的是合并后的生效状态：/off 静默中的群不算在生效里，否则跟群列表打架
+            "groups_runtime": len([g for g in self._known_groups() if self._group_state(g)["enabled"]]),
             "memory": mem,
             "memes": memes,
             "peers": len(getattr(self.p, "peers", []) or []),
@@ -170,17 +220,25 @@ class PanelApi:
             st = getattr(self.p, "_groups", {}).get(gid)
             a = affect_state.get(gid, {}) or {}
             ov = getattr(self.p, "_group_overrides", {}).get(gid, {}) or {}
+            state = self._group_state(gid)
             interject_last_hour = 0
             if st is not None:
                 interject_last_hour = len([t for t in st.interject_times if now - t < 3600])
             out.append({
                 "group_id": gid,
-                "enabled": self.p._group_allowed(gid),
+                # enabled 给的是「合并后真正生效」的结果（静默 + override + 白名单），
+                # 不是单看你写没写过 override：前端拿它当开关状态，两个来源分开给就会打架
+                "enabled": state["enabled"],
+                "muted": state["muted"],
+                "whitelisted": state["whitelisted"],
+                "state_reason": state["reason"],
                 "override": {
                     "enabled": ov.get("enabled"),
                     "interject_desire": ov.get("interject_desire"),
                     "note": ov.get("note") or "",
                 },
+                # 有没有 override 决定面板要不要放「删 override」按钮：没东西可删就别给按钮
+                "has_override": bool(ov),
                 "buffered_msgs": len(st.msgs) if st is not None else 0,
                 "msgs_since_bot": st.msgs_since_bot if st is not None else 0,
                 "interject_last_hour": interject_last_hour,
@@ -365,14 +423,84 @@ class PanelApi:
         else:  # note
             value = str(value or "")[:40]
 
+        # 白名单闸门。override 的语义是「覆盖白名单里的某个群」，不是「白名单之外还能开后门」：
+        # 不拦的话，谁打开面板就能把一个没上线的群点亮，等于 enabled_groups 这条安全线形同虚设。
+        # 只拦「要让它生效」的动作（打开 / 调意愿），关闭、备注、删 override 一律放行，
+        # 否则历史脏数据就再也清不掉了。
+        if not self._in_whitelist(gid) and (key == "interject_desire" or (key == "enabled" and value is True)):
+            return _json_err(
+                f"群 {gid} 不在 enabled_groups 里（也没有 \"*\"），面板不能给它单独配置。"
+                "要让它在群里接话，先把群号加进插件配置的 enabled_groups；"
+                "如果这是以前留下的 override，点这张卡上的「重置」就能清掉"
+            )
+        if key == "enabled" and value is True:
+            # 静默状态存在 group_muted.json，是群内 /off /on 的地盘：面板直接清掉会漏掉
+            # 「恢复时是否要加回云崽白名单」那一位，那样开出来的群在云崽侧还是哑的
+            if self.p._is_muted(gid):
+                return _json_err(
+                    f"群 {gid} 正处于 /off 静默，面板改不了静默状态；请先在该群发 /on 解除"
+                )
+
         groups = dict(getattr(self.p, "_group_overrides", {}) or {})
         item = dict(groups.get(gid) or {})
-        item[key] = value
-        groups[gid] = item
+        if key == "enabled" and value is True:
+            # 开启 = 回到「跟随白名单」，而不是往 override 里塞一条 enabled=true。
+            # 塞 true 等于把这个群钉死在白名单之外：以后就算把它从白名单删掉，
+            # _group_allowed 仍会因为这条 override 继续接话（问题 3 的根源）
+            item.pop("enabled", None)
+        else:
+            item[key] = value
+        if item:
+            groups[gid] = item
+        else:
+            # 关掉之后 override 空成 {}：空条目会让人以为「这个群单独配过」，直接删掉
+            groups.pop(gid, None)
         try:
             self.p.save_group_overrides(groups)
         except Exception as e:
             logger.warning("[fish] 控制台写群配置失败：%s", e)
             return _json_err(f"写文件失败：{e}")
         self.p.log_event("panel", gid, f"面板改了 {key} = {value}")
-        return _json_ok({"group_id": gid, "key": key, "value": value, "override": item})
+        return _json_ok({
+            "group_id": gid, "key": key, "value": value, "override": item,
+            # 回写生效状态：前端刷新前就能知道这次改动到底让群开起来了没有
+            "state": self._group_state(gid),
+        })
+
+    async def group_reset(self):
+        """删掉群级 override（整条，或只删某个字段）。
+
+        加这个接口是因为 override 调歪了原来只能手改 data/group_overrides.json，
+        面板上的「意愿」滑块也没有归零入口。只删 override，不动 group_muted.json：
+        静默的解除要连带把云崽白名单恢复回去，那属于群内 /on 的职责，面板越俎代庖会把状态搞歪。
+        """
+        body = await request.json({}) or {}
+        gid = str(body.get("group_id") or "").strip()
+        key = str(body.get("key") or "").strip()
+        if not gid.isdigit():
+            return _json_err("group_id 必须是纯数字群号")
+        groups = dict(getattr(self.p, "_group_overrides", {}) or {})
+        if gid not in groups:
+            # 没 override 不算错：面板可能停在旧数据上，直接返回当前生效状态就行
+            return _json_ok({"group_id": gid, "removed": [],
+                             "state": self._group_state(gid)})
+        item = dict(groups.get(gid) or {})
+        if key:
+            # 指定字段就只删这个字段，别的设置（比如备注）保留
+            removed = [key] if key in item else []
+            item.pop(key, None)
+        else:
+            removed = list(item.keys())
+            item = {}
+        if item:
+            groups[gid] = item
+        else:
+            groups.pop(gid, None)
+        try:
+            self.p.save_group_overrides(groups)
+        except Exception as e:
+            logger.warning("[fish] 控制台删群 override 失败：%s", e)
+            return _json_err(f"写文件失败：{e}")
+        self.p.log_event("panel", gid, f"面板删了 override：{'、'.join(removed) or '无'}")
+        return _json_ok({"group_id": gid, "removed": removed,
+                         "override": item, "state": self._group_state(gid)})

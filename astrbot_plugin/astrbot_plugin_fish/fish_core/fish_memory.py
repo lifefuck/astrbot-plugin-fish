@@ -156,6 +156,24 @@ class FishMemoryEngine:
                 out.extend([seg[i:i + 2] for i in range(len(seg) - 1)])
         return out
 
+    # 问句里的句子骨架，检索前全部丢掉，留下真正指向内容的词
+    _QUERY_NOISE = re.compile(
+        r"(你还?记得|记不记得|我跟?你说过|我说过吗?|我之前?说过|"
+        r"你知不知道|知不知道|告诉过你|问过你|"
+        r"(什么|怎么|怎样|如何|哪|谁|多少|几时)|"
+        r"[吗呢么呀啊吧的了吗着过]|"
+        r"(?<![\u4e00-\u9fff])(你|我|他|她|它|们)(?![\u4e00-\u9fff]))"
+    )
+
+    @classmethod
+    def _content_words(cls, query: str) -> str:
+        """把一句问话剥成实词：'你还记得我有几只猫吗' → '有 几 只 猫'。"""
+        q = query or ""
+        # 书名号/引号里的东西是实词，先摘出来，免得被句式词规则误伤
+        keep = re.findall(r"[《「\"']([^《》「」\"']{1,10})[》」\"']", q)
+        q = cls._QUERY_NOISE.sub(" ", q)
+        return (q + " " + " ".join(keep)).strip()
+
     @staticmethod
     def jaccard(a: str, b: str) -> float:
         set_a = set(FishMemoryEngine.tokens(a))
@@ -322,9 +340,24 @@ class FishMemoryEngine:
         """根据当前发言检索该群友最相关的历史记忆条目。
         融合分数 = BM25字面分 * 重要度 * 时间半衰期衰减
         """
-        q_tokens = self.tokens(query)
+        # 问「你还记得我有几只猫吗」拿整句检索必然 0 命中：原话里根本没有这一整句。
+        # 先把问句剥成实词再检索，剥完空了才退回原句。
+        q_words = self._content_words(query)
+        # 「猫」这种单字在正文里是「养猫」的一部分，二元分词永远对不上，
+        # 单独记下来按字面包含加一点分，不然问「几只猫」永远 0 命中
+        # 高频虚字不能当检索线索，否则「今天天气怎么样」能匹配上「天天熬夜」
+        q_chars = [c for c in dict.fromkeys(q_words)
+                   if CJK.match(c) and c not in "我你他她它们的了是有不在这那就都也还和个天今气什么上下里到说想会能要"]
+        # 这几个二元词在聊天里几乎每句都有，留着只会把不相干的记忆勾出来
+        _GENERIC = {"天天", "今天", "现在", "时候", "东西", "事情", "问题",
+                    "一下", "有点", "真的", "就是", "可以", "知道", "觉得"}
+        q_tokens = [t for t in self.tokens(q_words) if t not in _GENERIC]
+        if not q_tokens:
+            q_tokens = self.tokens(query)
         if not q_tokens:
             return []
+        # 数量型提问的答案往往不带实体词（「4只」），单独扫一遍数字+量词
+        wants_number = bool(re.search(r"(几|多少)\s*(只|个|次|条|张|天|岁|块|分|位|门|套)", query or ""))
 
         with self._get_conn() as conn:
             rows = conn.execute(
@@ -365,6 +398,15 @@ class FishMemoryEngine:
                 denom = tf + k1 * (1.0 - b + b * (doc_len / max(1, avgdl)))
                 bm25 += idf * (tf * (k1 + 1.0)) / max(0.001, denom)
 
+            if q_chars:
+                bm25 += 0.8 * sum(1 for c in q_chars if c in (d["content"] or ""))
+
+            # 数量型加分只在「本来就是同一件事」时生效：
+            # 否则问「你几岁了」会把「我养了4只猫」当成答案（纯数字+量词就加分）
+            if wants_number and bm25 > 0.1 and re.search(r"\d+\s*(只|个|次|条|张|天|岁|块|分|位|门|套)", d["content"] or ""):
+                # 扫到「4只猫」这种，直接抬分，不然这条永远排不进前二
+                bm25 += 1.5
+
             if bm25 <= 0.1:
                 continue
 
@@ -372,8 +414,14 @@ class FishMemoryEngine:
             age_days = (now_ts - d.get("last_activated_at", d["created_at"])) / 86400.0
             effective_half_life = half_life_days * (2.0 if d["memory_type"] in ("fact", "preference") else 1.0)
             decay = math.exp(-0.693 * max(0.0, age_days) / max(1.0, effective_half_life))
+            # 衰减设地板：一年前的旧事也会衰减到 0.0002，等于永久失效，
+            # 但「我养猫」这种事不该因为没人提就忘光。地板 0.15 让它沉底但活着
+            decay = max(0.15, decay)
 
             score = bm25 * d["importance"] * decay
+            if score <= 0.05:
+                # 0 分条目别占 top_k 名额
+                continue
             results.append({
                 "id": d["memory_id"],
                 "content": d["content"],

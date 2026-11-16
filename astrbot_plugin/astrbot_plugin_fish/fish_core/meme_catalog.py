@@ -79,6 +79,9 @@ def _load() -> None:
     logger.info("表情包索引载入完成: %d 条，%d 个情绪标签", len(items), len(_by_emotion))
 
 
+_STRAY_TAG_RE = re.compile(r"\[\s*[A-Za-z]{2,10}\s*[:：][^\]\n]{0,12}\]")
+
+
 def extract_tag(text: str) -> Tuple[str, str]:
     """把回复里的 [MEME:嘲讽] 剥出来，返回 (干净文本, 情绪标签)"""
     if not text:
@@ -92,6 +95,9 @@ def extract_tag(text: str) -> Tuple[str, str]:
         # 模型手滑写成 [MEME:]/[MEME：情绪+解释] 时也要清掉，别把残渣发给群友
         # 结尾括号也可能被 max_tokens 截断（实测出现过 [MEME:嘲讽 没有右括号），闭合括号设为可选
         leftover = re.sub(r"[\[【［]\s*MEME\s*[:：][^\]】］\n]*[\]】］]?", "", text, flags=re.I)
+        # 手滑写错前缀（[CAME:无奈]、[EMOJI:得意]）以前会原样发给群友，
+        # 群里看着就是一段乱码方括号。任何「英文前缀:内容」的方括号标签都抹掉
+        leftover = _STRAY_TAG_RE.sub("", leftover)
         return leftover.strip(), ""
     tag = m.group(1).strip()
     return _TAG_RE.sub("", text).strip(), tag

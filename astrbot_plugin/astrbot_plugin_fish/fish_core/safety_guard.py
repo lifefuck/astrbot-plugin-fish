@@ -149,6 +149,8 @@ SENSITIVE_REFUSAL = "这个问题本鱼拒绝回答，风控雷达正在滴滴�
 
 _PASS_BRACKET_RE = re.compile(r"[\[［【(（]\s*pass\s*[\]］】)）]", re.IGNORECASE)
 _PASS_EDGE = " \t\r\n。.!！~～,，、;；:：\"'“”‘’*`"
+# 模型吐出来的 CQ 码（[CQ:face,id=178] / 全角变体）：适配器不会解析，会原样进群
+_CQ_CODE_RE = re.compile(r"[\[［]\s*CQ\s*:[^\]］]*[\]］]", re.IGNORECASE)
 
 
 def is_pass_signal(text: str) -> bool:
@@ -278,7 +280,63 @@ def sanitize_outgoing_text(text: str) -> Tuple[bool, str]:
         if reg.search(body):
             return False, SENSITIVE_REFUSAL
     masked, tokens = _mask(body)
+    # 模型偶尔会照着训练语料吐 CQ 码（[CQ:face,id=178]）。它不像合法 CQ 那样
+    # 被适配器解析，而是会原样打进群，看着像乱码，所以直接抹掉
+    masked = _CQ_CODE_RE.sub("", masked)
     for rx, rep in _MD_NOISE:
         masked = rx.sub(rep, masked)
     masked = _strip_self_talk(masked)
     return True, _unmask(masked, tokens).strip()
+
+# 感知不到的输入却说「我听过/我看过」——语音、视频、直播一律没有内容进来，
+# 这类句子不是判断错，是纯粹的编。真实案例：「这配音听着跟我外婆刷的广场舞视频一个味」。
+# 只认高精度的组合，宁可漏也不误杀正常接话
+_UNPERCEIVED = (
+    re.compile(r"(配音|配乐|BGM|bgm|这声音|这歌|这曲子|这视频|这段子|这语音)"
+               r"[^，。！？]{0,8}(听着|听起来|好听|难听|上头|一个味|刺耳|洗脑|带感)"),
+    re.compile(r"我(刚|刚才|也)?(听过|听了这|在听|耳机|这边放着|外放着)"),
+    re.compile(r"我(刚|刚才)?看了?(这|那)?(条)?(视频|直播|录像|回放)"),
+    re.compile(r"我(外婆|奶奶|姥姥|爷爷|外公|妈妈|我妈|我爸|家里老)"),
+    # 下面是「凭空长出一段亲身经历」：它没打过排位、没有队友、没有电脑
+    re.compile(r"(?:队友|对面|打野|辅助|上单|中单|射手)(?:不管|不帮|太菜|坑|坑我|骂我|挂机)"),
+    re.compile(r"我(?:在|也)?(?:打|玩|开)(?:排位|一局|开黑|游戏|两把)"),
+    re.compile(r"我这台(?:电脑|机子|机器|破机)"),
+    re.compile(r"我(?:家|宿舍|屋里)的?(?:网|电脑|路由|宽带)"),
+)
+
+
+def claims_unperceived(text: str) -> str:
+    """返回命中的片段，没命中返回空串。"""
+    s = str(text or "")
+    if not s:
+        return ""
+    for pat in _UNPERCEIVED:
+        m = pat.search(s)
+        if m:
+            return m.group(0)
+    return ""
+
+# 旁白式接话：不接内容，只点评对方「这句话怎么说出口的」或凭空编一段「你刚才……」。
+# 实测回放里最刺眼的一类：「这话单拎出来怎么听怎么不对劲」「你刚还嚷着要看，装什么傻」
+# 「骂完人还是得用u盘，折腾半天」。只认高精度组合，宁可漏
+_META_TALK = (
+    re.compile(r"这话(?:单拎出来|怎么听|听着就|一说出来|说出来)"),
+    re.compile(r"怎么听(?:怎么|都)(?:不)?对劲"),
+    re.compile(r"你这话(?:问得|说得|听得)"),
+    re.compile(r"你(?:刚|刚才|之前)(?:还|就)?(?:在)?(?:嚷|喊|骂|问|说)着?"),
+    re.compile(r"刚(?:骂|说|问|嚷|喊)完我"),
+    re.compile(r"合着刚才"),
+    re.compile(r"(?:人家|你)(?:刚|才)还.{0,6}(?:装什么|是不是)"),
+)
+
+
+def narrates_speaker(text: str) -> str:
+    """返回旁白/编造刚才的命中片段，没命中返回空串。"""
+    s = str(text or "")
+    if not s:
+        return ""
+    for pat in _META_TALK:
+        m = pat.search(s)
+        if m:
+            return m.group(0)
+    return ""
