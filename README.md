@@ -2,6 +2,8 @@
 
 [![ci](https://github.com/lifefuck/astrbot-plugin-fish/actions/workflows/ci.yml/badge.svg)](https://github.com/lifefuck/astrbot-plugin-fish/actions/workflows/ci.yml)
 
+中文 | [English](README.en.md)
+
 两个跑在 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 上的 QQ 插件。重点不是「一问一答」，而是尽量像个正常群友：记得住人，会挑时机插话，会打错字再补一句，会看群里发的图，会用表情包。
 
 协议端用 NapCat（或其他 OneBot 11 实现），模型接任意 OpenAI 兼容接口。
@@ -135,7 +137,7 @@ python3 scripts/mine_group_slang.py --apply    # 写盘
 
 改群只在页面里动三项：`enabled`（这个群接不接）、`interject_desire`（这个群多爱插话，0~1）、`note`（备注）。这三项写进插件目录的 `data/group_overrides.json`，和 AstrBot 全局配置分开——单个群调错不会把整份配置写坏。
 
-后端在 `fish_core/panel.py`，六个接口挂在 `/astrbot_plugin_fish/panel/*`；页面是 `pages/console/index.html`，一个文件，没有构建步骤。
+后端在 `fish_core/panel.py`，八个接口挂在 `/astrbot_plugin_fish/panel/*`；页面是 `pages/console/index.html`，一个文件，没有构建步骤。
 
 ## 记忆查询
 
