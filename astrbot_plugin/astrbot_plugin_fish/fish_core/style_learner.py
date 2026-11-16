@@ -57,8 +57,27 @@ def _load() -> None:
     except FileNotFoundError:
         _pool = []
     except Exception as e:
+        # 池子读坏了不能当空池处理：下一次 flush 会把 700 多条样本整体覆盖成 []。
+        # 先把坏文件改名留档，再试 .bak，实在没有才认空
         logger.warning("读取接话样例池失败: %s", e)
+        try:
+            broken = "{}".format(_POOL_PATH) + ".corrupt-" + time.strftime("%Y%m%d%H%M%S")
+            os.replace(_POOL_PATH, broken)
+            logger.warning("接话样例池已损坏，原文件留在 %s", broken)
+        except Exception:
+            pass
         _pool = []
+        import glob
+        for bak in sorted(glob.glob(_POOL_PATH + ".bak-*"), reverse=True):
+            try:
+                with open(bak, encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list) and data:
+                    _pool = [x for x in data if isinstance(x, dict) and x.get("a") and x.get("b")]
+                    logger.warning("接话样例池已从 %s 恢复 %d 条", os.path.basename(bak), len(_pool))
+                    break
+            except Exception:
+                continue
 
 
 def _flush(force: bool = False) -> None:
@@ -71,6 +90,12 @@ def _flush(force: bool = False) -> None:
     tmp = _POOL_PATH + ".tmp"
     try:
         os.makedirs(_DATA_DIR, exist_ok=True)
+        # 落盘前留快照，写坏一次不至于 708 条样本全灭
+        try:
+            import backup as _bak
+            _bak.snapshot_json(_POOL_PATH)
+        except Exception:
+            pass
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(_pool, f, ensure_ascii=False, indent=0)
         os.replace(tmp, _POOL_PATH)
@@ -131,9 +156,32 @@ def _usable(prev: str, reply: str) -> bool:
     return _related(prev, reply)
 
 
+def _too_similar(reply: str, gid: str) -> bool:
+    """池子里已经有一条几乎一样的接话了 → 这条不收。
+
+    人设学习里这一层只许否决、不许放行：能不能进还是靠上面的硬门禁，
+    这里只负责把「嗯」「确实」「笑死」这种换个字的重复挡掉，免得池子全是同一种腔调。
+    """
+    base = {c for c in reply if "\u4e00" <= c <= "\u9fff"}
+    if len(base) < 2:
+        return True  # 纯标点/单个字，没有学习价值
+    for item in _pool:
+        if str(item.get("gid")) != str(gid):
+            continue
+        other = {c for c in str(item.get("b") or "") if "\u4e00" <= c <= "\u9fff"}
+        if not other:
+            continue
+        overlap = len(base & other) / max(1, min(len(base), len(other)))
+        if overlap >= 0.85:
+            return True
+    return False
+
+
 def _add(gid, prev: str, reply: str) -> bool:
     global _dirty
     _load()
+    if _too_similar(reply, gid):
+        return False
     key = (str(gid), prev[:20], reply)
     for item in _pool:
         if (item.get("gid"), str(item.get("a"))[:20], item.get("b")) == key:
@@ -151,7 +199,9 @@ def _add(gid, prev: str, reply: str) -> bool:
 def observe(group_id, pool) -> int:
     """在线学习：拿历史池里最后两条凑一对。返回是否新增（0/1）。"""
     try:
-        if not group_id or not pool or len(pool) < 2:
+        # 门槛门禁：池子还太浅的时候先不学。
+        # 两条消息凑出来的「样本」大概率是问答或复读，学进去只会把池子带偏
+        if not group_id or not pool or len(pool) < 8:
             return 0
         prev_item, cur_item = pool[-2], pool[-1]
         # 自己发的不学：学自己的旧话只会让它越来越像自己

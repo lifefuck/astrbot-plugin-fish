@@ -48,7 +48,7 @@
   "interject_cooldown_sec": {
     "description": "主动接话硬冷却（秒）",
     "type": "int",
-    "default": 300,
+    "default": 120,
     "hint": "刚说完话这段时间内绝不再主动插嘴，防霸屏。"
   },
   "reply_when_at": {
@@ -68,9 +68,9 @@
     "hint": "模型写了 [MEME:情绪] 时附一张图；标签本身一定被剥掉，不会漏进群。"
   },
   "timeline_size": {
-    "description": "喂给模型的最近消息条数",
+    "description": "上下文条数上限（配合 context_window_sec 时间窗，先按时间筛再截条数）",
     "type": "int",
-    "default": 12,
+    "default": 40,
     "slider": {
       "min": 0,
       "max": 40,
@@ -80,7 +80,7 @@
   "memory_recall_topk": {
     "description": "记忆召回条数",
     "type": "int",
-    "default": 2,
+    "default": 4,
     "slider": {
       "min": 0,
       "max": 6,
@@ -119,13 +119,13 @@
   "split_max_chars": {
     "description": "拆条字数阈值",
     "type": "int",
-    "default": 60,
+    "default": 26,
     "slider": {
-      "min": 20,
+      "min": 10,
       "max": 200,
-      "step": 5
+      "step": 2
     },
-    "hint": "单条超过这么多字才拆。0 或负数 = 永不拆。"
+    "hint": "单条超过这么多字就拆成两条。真人一条消息通常十几二十字，超过这个数就该换行了。0 或负数 = 永不拆。"
   },
   "split_max_parts": {
     "description": "最多拆成几条",
@@ -167,17 +167,22 @@
   "vision_model": {
     "description": "视觉主模型",
     "type": "string",
-    "default": "gemini-3.5-flash-lite",
+    "default": "gemini-4-hydrogen",
     "hint": "默认 lite：实测 1~2 秒就能把图里的字逐字抄准；gemini-3.8-flash 在这台机器上常 25 秒超时，不适合群聊实时场景。"
   },
   "vision_fallback_models": {
     "description": "视觉降级模型",
     "type": "list",
     "default": [
-      "gemini-3.6-flash",
-      "gemini-3.8-flash"
+      "gemini-3.5-flash-lite",
+      "gemini-3.1-flash-lite"
     ],
-    "hint": "按顺序试；上次成功的模型下次自动排到队首，别每次都先等主模型超时。"
+    "hint": "只放 lite 系：实测 3.5/3.1-flash-lite、flash-lite-latest 都在 1~3 秒出描述；3.6/3.8-flash 同样一张图要 14~21 秒，配 12 秒总预算等于永远轮不上。",
+    "items": [
+      "gemini-3.1-flash-lite",
+      "gemini-flash-lite-latest",
+      "gemini-3.5-flash-lite"
+    ]
   },
   "vision_max_images": {
     "description": "单条消息最多看几张图",
@@ -192,7 +197,7 @@
   "vision_timeout_sec": {
     "description": "单模型超时（秒）",
     "type": "int",
-    "default": 6,
+    "default": 12,
     "slider": {
       "min": 3,
       "max": 60,
@@ -203,7 +208,7 @@
   "vision_total_budget_sec": {
     "description": "识图总预算（秒）",
     "type": "int",
-    "default": 12,
+    "default": 20,
     "slider": {
       "min": 5,
       "max": 60,
@@ -261,7 +266,7 @@
   "meme_min_gap_sec": {
     "description": "两张表情包之间的最小间隔（秒）",
     "type": "int",
-    "default": 300,
+    "default": 180,
     "slider": {
       "min": 0,
       "max": 3600,
@@ -272,7 +277,7 @@
   "meme_follow_gap_sec": {
     "description": "对方发图后多久内不跟图（秒）",
     "type": "int",
-    "default": 90,
+    "default": 60,
     "slider": {
       "min": 0,
       "max": 600,
@@ -387,8 +392,13 @@
   },
   "follow_max_turns": {
     "type": "int",
-    "default": 5,
+    "default": 2,
     "description": "追问窗口里最多连续免 @ 几次"
+  },
+  "follow_min_gap_sec": {
+    "type": "int",
+    "default": 8,
+    "description": "追问窗口内两次回复的最小间隔（秒）,防止一句一回刷屏"
   },
   "panel_event_buffer": {
     "type": "int",
@@ -429,5 +439,78 @@
     "type": "int",
     "default": 24,
     "description": "记忆库备份间隔（小时）"
+  },
+  "context_window_sec": {
+    "type": "int",
+    "default": 1800,
+    "description": "主模型上下文时间窗（秒）：这段时间内的发言都进 prompt，别再按固定条数截断话题"
+  },
+  "social_context_sec": {
+    "type": "int",
+    "default": 1800,
+    "description": "第一步判官（social_read）的上下文时间窗（秒），太短会让它把刚聊过的事再问一遍"
+  },
+  "enabled_private_users": {
+    "description": "私聊白名单",
+    "type": "list",
+    "default": [],
+    "hint": "留空 = 只有 owner_qq 能私聊。填了才对外，别填陌生号。"
+  },
+  "reply_max_chars": {
+    "description": "单条回复字数上限",
+    "type": "int",
+    "default": 260,
+    "slider": {
+      "min": 60,
+      "max": 800,
+      "step": 20
+    },
+    "hint": "超过就截断。跟 split_max_chars 不是一回事：那个是拆条，这个是防跑题。"
+  },
+  "tech_repeat_window_sec": {
+    "description": "技术话题复读窗口",
+    "type": "int",
+    "default": 600,
+    "slider": {
+      "min": 60,
+      "max": 3600,
+      "step": 60
+    },
+    "hint": "这段时间内同一个技术标识符（型号/型号/参数）说过了就不再重复。"
+  },
+  "natural_song": {
+    "description": "自然语言点歌",
+    "type": "bool",
+    "default": true,
+    "hint": "开着就能直接说「我想听晴天」，不用敲指令。"
+  },
+  "natural_tattle": {
+    "description": "主动上报开关",
+    "type": "bool",
+    "default": true,
+    "hint": "关掉后模型照常判断，但不私聊上报主人。"
+  },
+  "order_guard_enabled": {
+    "description": "群秩序巡检总开关",
+    "type": "bool",
+    "default": true,
+    "hint": "广告/刷屏/辱骂的主动上报，判断在提示词里，这里只是总闸。"
+  },
+  "order_guard_cooldown_sec": {
+    "description": "同群上报冷却",
+    "type": "int",
+    "default": 600,
+    "slider": {
+      "min": 60,
+      "max": 3600,
+      "step": 60
+    },
+    "hint": "同一个群多少秒内只打扰主人一次。"
+  },
+  "tattle_watch_groups": {
+    "description": "主动上报的群白名单",
+    "type": "list",
+    "default": [],
+    "hint": "留空 = 一个群都不上报。只有这里列出的群才会因为违规私聊主人。"
   }
 }

@@ -25,7 +25,6 @@ import meme_gate  # noqa: E402
 import peer_bots  # noqa: E402
 import social_read  # noqa: E402
 import splitter  # noqa: E402
-import typo  # noqa: E402
 
 
 def line(title):
@@ -56,12 +55,9 @@ def main():
     print("摘语气词 :", anti_template.trim_particle(t, ["就这啊", "行吧啊"]))
     print("去复述   :", anti_template.strip_echo_opener("面试？面试确实得准备一下", "我明天要去面试"))
 
-    line("4. 手滑与纠正（prob=1.0 强制触发）")
-    sample = "我觉得应该已经知道了，现在还是先一起看看问题"
-    r = typo.maybe_typo(sample, prob=1.0)
-    print("原文     :", sample)
-    print("打错后   :", r.text if r else "未触发")
-    print("纠错话术 :", typo.correction_line(r) if r else "-")
+    # 4. 手滑打错字：旧仓 services/typo.py 迁移时没搬过来，插件里也没有任何调用点。
+    # 这里原本 import typo 直接 ModuleNotFoundError，让整个自检跑不起来，
+    # 干脆去掉这一节；哪天真把打错字做回来，再连同 import 一起补
 
     line("5. 接话质量分（门槛 0.62，desire=0.30）")
     thr = interject_score.interject_threshold(0.30)

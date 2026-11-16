@@ -10,3 +10,5 @@ __pycache__/
 *.pyc
 .venv/
 .DS_Store
+# 表情包素材是本地素材，按 README 自己放，不要把别人机器的软链接传上来
+astrbot_plugin/astrbot_plugin_fish/fish_core/meme-pack
