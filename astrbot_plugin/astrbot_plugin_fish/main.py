@@ -498,6 +498,26 @@ class GroupState:
     claiming: bool = False
 
 
+def _poke_aimed_at_me(seg, self_id: str, gid: str) -> bool:
+    """这个 Poke 段是不是戳我。
+
+    目标 id 得走 target_id()：NapCat 有时候把目标放在旧字段 qq 上，有时候
+    直接给 id=0，只看 .id 会漏掉一整类戳——私聊戳基本全是这样，表现就是
+    「戳了不回、也不回戳」。
+    """
+    getter = getattr(seg, "target_id", None)
+    try:
+        tgt = getter() if callable(getter) else str(getattr(seg, "id", "") or "")
+    except Exception:
+        tgt = str(getattr(seg, "id", "") or "")
+    if tgt and str(tgt) == self_id:
+        return True
+    # 目标 id 缺失（NapCat 有时给 id=0 / 干脆不给）时按「戳我」处理：
+    # 这类事件推给 bot 基本都是冲它来的，就算不是，回戳一下也远比
+    # 让原生 LLM 对着一条空消息自由发挥强
+    return not tgt
+
+
 def _handler_guard(fn):
     """事件入口兜底。
 
@@ -1533,9 +1553,13 @@ class FishPlugin(Star):
             # 这里必须 stop_event——不拦的话 AstrBot 自己的默认 LLM 还会接 @
             event.stop_event()
             return
-        # 戳一戳交给 on_poke。这里必须先让路：群消息 handler 排在前面，
-        # 它一旦对空文本调 stop_event，后面注册的 on_poke 就再也不会被执行
+        # 戳一戳自己接。不能只 return：on_group 排在 on_poke 前面，
+        # return 之后如果 on_poke 也因为「目标 id 对不上」提前返回，
+        # 这条空消息就没人拦，原生 LLM 会当成普通消息自由发挥
         if any(isinstance(c, Poke) for c in (event.message_obj.message or [])):
+            async for r in self.on_poke(event):
+                yield r
+            event.stop_event()
             return
         uid = str(event.get_sender_id())
         self_id = str(event.get_self_id())
@@ -1680,17 +1704,6 @@ class FishPlugin(Star):
                     st.last_bare_at_ts = now
                     yield event.plain_result(random.choice(["？", "咋了", "在呢", "你说"]))
                 event.stop_event()
-                return
-            # 私聊的戳一戳不会走 PokeEvent，而是以「只有 Poke 段」的消息进来。
-            # 这里不认，原生流程就会拿它当普通消息，模型自己猜「大概是在戳我」，
-            # 于是冒出一句莫名其妙的回应——线上真出过这事
-            poked_me = any(
-                isinstance(s, Poke) and str(getattr(s, "id", "")) == str(event.get_self_id())
-                for s in (event.message_obj.message or [])
-            )
-            if poked_me:
-                async for r in self.on_poke(event):
-                    yield r
                 return
             # 纯语音/表情/卡片：不接，但别 stop——语音转文字之类的插件还要处理这条
             if not is_at:
@@ -1998,7 +2011,10 @@ class FishPlugin(Star):
             logger.info("[fish] 私聊来自白名单外 %s，忽略", uid)
             event.stop_event()
             return
-        if self._seen_mid("p:%s" % (getattr(event.message_obj, "message_id", "") or "")):
+        # 戳一戳消息通常没有 message_id，走「p:」去重会互相顶掉——
+        # 前一次空 id 把这次记成重复，戳就永远不回。这里对 Poke 直接跳过去重
+        _is_poke_msg = any(isinstance(c, Poke) for c in (getattr(event.message_obj, "message", []) or []))
+        if not _is_poke_msg and self._seen_mid("p:%s" % (getattr(event.message_obj, "message_id", "") or "")):
             logger.info("[fish] 私聊收到重复投递，忽略")
             event.stop_event()
             return
@@ -2025,8 +2041,14 @@ class FishPlugin(Star):
         # 私聊里的戳一戳会被 AstrBot 当成「没有正文的私聊消息」派到这里，
         # on_poke 根本轮不上（实测 4 下戳全落在空消息分支）。所以在这里自己认 Poke：
         # 回戳必须照给，人话 25 秒内只说一句
-        poked = any("poke" in str(getattr(c, "type", "")).lower()
-                    for c in (event.get_messages() or []))
+        # 两个来源都要看：get_messages() 有时把 Poke 段吞了（转成空文本），
+        # message_obj.message 还留着原始组件。只看一个会漏判，表现就是「戳了不回」
+        _seg_lists = [list(event.get_messages() or []),
+                      list(getattr(event.message_obj, "message", []) or [])]
+        poked = any(
+            isinstance(c, Poke) or "poke" in str(getattr(c, "type", "")).lower()
+            for segs in _seg_lists for c in segs
+        )
         if poked:
             if self.cfg.get("poke_back", True):
                 await _poke_back(getattr(event, "bot", None), "private", uid, self_id)
@@ -2160,12 +2182,15 @@ class FishPlugin(Star):
         poked = [s for s in segs if isinstance(s, Poke)]
         if not poked:
             return
-        # 别人互戳跟我没关系，只认戳到我自己身上的
+        # 别人互戳跟我没关系，只认戳到我自己身上的。
+        # 目标 id 得走 target_id()：NapCat 有时候把目标放在旧字段 qq 上，
+        # 有时候直接给 id=0，只看 .id 会漏掉一整类戳（私聊戳基本都这样）
         self_id = str(event.get_self_id())
-        if not any(str(getattr(s, "id", "")) == self_id for s in poked):
-            return
-
         gid = str(event.get_group_id() or "private")
+
+        if not any(_poke_aimed_at_me(s, self_id, gid) for s in poked):
+            logger.info("[fish] 收到戳一戳段但目标不是我：%s", [repr(s) for s in poked])
+            return
         if self._is_muted(gid):
             # 静默连戳都不理，但也不回戳——不然「全关」了手还在动
             return
