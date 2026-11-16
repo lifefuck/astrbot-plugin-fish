@@ -19,10 +19,10 @@ astrbot_plugin_memory_cmd/  /memary 记忆查询，独立插件，只读
 - **长期记忆**：每条群消息过一遍抽取（事实、偏好、计划、事件），按群和群友分开存；回话前只捞最相关的两条，不灌满上下文。
 - **印象原子**：从记忆里再压一层短句（谁爱喝什么、谁在干什么），带衰减和去重，重复的事不会被反复提。
 - **接话时机**：先按「像不像在问人 / 有没有空档 / 是不是重复」打分，过门槛才动手；再加一道社会判断，判不接就一次模型都不调。
-- **免 @ 追问**：@ 它一次，之后 5 分钟 / 最多 5 轮内它继续把这句对话当自己的事，不用每次 @。
+- **免 @ 追问**：@ 它一次，之后 5 分钟内（最多再追问 2 轮）它继续把这句对话当自己的事，不用每次 @。
 - **反模板**：起手撞车、结尾撞车、连续重复语气词、复述式开场，出口统一削掉。
 - **手滑**：偶尔打错字，小概率再补一条纠正。
-- **拆条**：超过 60 字拆成 2~3 条，间隔随机补发，不在括号和标签中间切。
+- **拆条**：超过 26 字拆成最多 3 条（心境差时只发两条），间隔随机补发；不切链接、英文长词和 ZWJ emoji，条数超了按名额均分而不是拼成一堵长墙。
 - **表情包**：按情绪标签选图，一回合最多一张；刚发过、对方刚发图都拦。
 - **斗图**：@ 它并甩图，它会挑一张库存反杀，先嘴一句再发图。
 - **看图**：群友发图 → 缩图 → Gemini 白描 → 描述塞进 prompt，失败静默降级。
@@ -32,6 +32,9 @@ astrbot_plugin_memory_cmd/  /memary 记忆查询，独立插件，只读
 - **关系网**：记最近谁爱 @ 谁，回话前给一句体感，不当统计表用。
 - **跨群**：别的群聊了什么留一句短摘要，必要时可以顺口提一句。
 - **文字游戏**：数字炸弹、掷骰子、抽签、点名，纯本地状态机，不花 token。
+- **点歌**：群里直接说「我想听晴天」，自己搜 B 站、下载、原文件发语音，等待期间先给一句进度。见下文「点歌依赖」。
+- **梗释义**：有人说「XX 是什么梗」，查梗百科塞进上下文，没收录就查一次并记下来。
+- **秩序上报**：白名单群里的广告拉人、表情包刷屏、严重辱骂，群里给一句提示，同时私聊上报主人（判断在提示词里，代码只做标记剥离）。
 - **戳一戳**：被戳先回戳，再基于「戳之前那条没被回的消息」接一句。
 - **护栏**：明确在套人设、要系统提示词、改写指令的，直接怼回去不调模型；正常提问一律放行。
 
@@ -43,8 +46,8 @@ astrbot_plugin_memory_cmd/  /memary 记忆查询，独立插件，只读
 git clone https://github.com/lifefuck/astrbot-plugin-fish.git
 cd astrbot-plugin-fish
 
-cp -r astrbot_plugin_fish        /path/to/astrbot/data/plugins/
-cp -r astrbot_plugin_memory_cmd  /path/to/astrbot/data/plugins/
+cp -r astrbot_plugin/astrbot_plugin_fish        /path/to/astrbot/data/plugins/
+cp -r astrbot_plugin/astrbot_plugin_memory_cmd  /path/to/astrbot/data/plugins/
 
 systemctl --user restart astrbot
 journalctl --user -u astrbot -f --no-pager | grep fish
@@ -76,7 +79,29 @@ AstrBot 面板 → 插件 → 小鲸鱼·群聊拟真。必须动的几个：
 
 模型（provider）、唤醒前缀 `/` 属于 AstrBot 全局设置，不在插件里配。
 
-表情包是个可选依赖：把表情包目录放在插件目录下的 `meme-pack/`，索引会自动载入；没有就只发文字。
+还有几个容易漏的：
+
+| 配置 | 说明 |
+| :--- | :--- |
+| `enabled_private_users` | 私聊白名单。**留空 = 只有主人能私聊**，填了才对外 |
+| `split_max_chars` / `split_max_parts` | 拆条阈值（默认 26 字）和条数上限（默认 3 条） |
+| `reply_max_chars` | 单条回复字数上限，防跑题式的长篇大论 |
+| `tech_repeat_window_sec` | 技术话题复读窗口：同一串参数/型号在这个时间内说过了就不再重复 |
+| `natural_song` | 自然语言点歌开关，关掉就只能走指令 |
+| `tattle_watch_groups` | 主动上报的群白名单，**留空 = 一个群都不上报** |
+| `order_guard_enabled` / `order_guard_cooldown_sec` | 秩序巡检总闸与同群上报冷却 |
+
+表情包是个可选依赖：把表情包目录放在 `astrbot_plugin_fish/fish_core/meme-pack/`，索引会自动载入；没有就只发文字。仓库不带素材。
+
+## 点歌依赖
+
+点歌不自己实现搜索和下载，而是复用另一个插件的能力：
+
+- 装 [astrbot_plugin_listen_music](https://github.com/57Darling02/astrbot_plugin_listen_music)（「我想听歌！」），它提供 B 站搜索、音频下载和音频处理；
+- 系统里有 `ffmpeg`，超过体积阈值时才用它压一版；
+- 两个插件装在同一个 AstrBot 的 `data/plugins/` 下，目录名保持 `astrbot_plugin_listen_music`。
+
+缺任何一个，点歌会自动降级成「找不到这首歌」，其它功能不受影响。
 
 ## 梗从哪来
 
@@ -120,7 +145,7 @@ python3 scripts/mine_group_slang.py --apply    # 写盘
 - 群主、管理员、机器人主人能看全群；
 - 人多时走合并转发，协议端不支持就退分页文本。
 
-它只读 `astrbot_plugin_fish/data/fish_memory.db`，没有任何写操作，所以聊天插件宕了它照样能用。
+它只读 `astrbot_plugin_fish/data/fish_memory.db` 和 `favor_state.json`，没有任何写操作，所以聊天插件宕了它照样能用。旧版机器人的 `user_memories.json` 是可选的历史补充，`user_mem_path` 留空就不读。
 
 ## 关于数据
 
