@@ -816,6 +816,12 @@ class FishPlugin(Star):
                 if not me:
                     st.msgs.append({"uid": r.get("uid") or "", "nick": r.get("who") or "",
                                     "text": r.get("text") or "", "ts": ts})
+            # 我上次说话的时间也得跟着捞回来。只捞消息不捞这个，重启后
+            # last_bot_reply_ts 归零，戳一戳就把「已经回过的旧话」当成没回，
+            # 硬补一句自我介绍——线上真发生过
+            spoke = [float(r.get("ts") or 0) for r in (rows or []) if r.get("me")]
+            if spoke:
+                st.last_bot_reply_ts = max(st.last_bot_reply_ts, max(spoke))
         if self._groups:
             logger.info("[fish] 已恢复 %d 个群/会话的最近对话", len(self._groups))
 
