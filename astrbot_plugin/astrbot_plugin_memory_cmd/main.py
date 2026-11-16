@@ -31,8 +31,9 @@ PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DATA = os.path.join(os.path.dirname(PLUGIN_DIR), "astrbot_plugin_fish", "data")
 DEFAULT_DB = os.path.join(DEFAULT_DATA, "fish_memory.db")
 DEFAULT_FAVOR = os.path.join(DEFAULT_DATA, "favor_state.json")
-# 老机器人的档案默认在同级目录的旧仓库里，找不到就只显示实时好感
-DEFAULT_OLD_MEM = os.path.expanduser("~/projects/qq-deepseek-bot/user_memories.json")
+# 旧版机器人的档案（可选）。默认不读：里面是别人的历史昵称和印象，
+# 换个环境路径也不存在。要显示就在面板里填 user_mem_path，或用环境变量指定
+DEFAULT_OLD_MEM = os.environ.get("FISH_OLD_MEM", "")
 
 _MEMORY_CACHE_TTL = 20.0
 _MEMORY_PER_PAGE = 12
@@ -317,20 +318,50 @@ class MemoryCmdPlugin(Star):
                     "content": [{"type": "text", "data": {"text": body}}],
                 },
             })
+        started = time.time()
         try:
             res = await asyncio.wait_for(
                 bot.call_action("send_group_forward_msg", group_id=int(group_id),
                                 messages=nodes),
-                timeout=8.0,
+                timeout=20.0,
             )
             if isinstance(res, dict) and res.get("status") == "failed":
                 logger.warning("[memary] 合并转发失败：%s", res)
                 return False
-            logger.info("[memary] 群 %s 合并转发 %d 条", group_id, len(nodes))
+            logger.info("[memary] 群 %s 合并转发 %d 条（%.1fs）", group_id, len(nodes), time.time() - started)
             return True
-        except Exception as e:
-            logger.warning("[memary] 合并转发异常：%s", e)
+        except asyncio.TimeoutError:
+            # 协议端常常是「消息已经发出去了，但 action 的结果迟迟不回」。
+            # 直接当失败去补发分页文本，群里就变成合并转发 + 一坨长文本，双份。
+            # 所以超时后回头看一眼历史里有没有自己刚发的合并消息，确认没发才降级
+            ok = await self._forward_landed(bot, group_id, started)
+            if ok:
+                logger.info("[memary] 群 %s 合并转发结果回得慢（%.1fs），但消息已发出，不再补发文本",
+                            group_id, time.time() - started)
+                return True
+            logger.warning("[memary] 合并转发超时且历史里查不到（%.1fs），退回分页文本",
+                           time.time() - started)
             return False
+        except Exception as e:
+            logger.warning("[memary] 合并转发异常：%s: %s", type(e).__name__, e)
+            return False
+
+    async def _forward_landed(self, bot, group_id: str, since: float) -> bool:
+        """超时兜底：查最近几条群里有没有带 json/forward 段的自己发的消息。"""
+        try:
+            res = await asyncio.wait_for(
+                bot.call_action("get_group_msg_history", group_id=int(group_id), count=6),
+                timeout=6.0,
+            )
+        except Exception:
+            return False
+        for msg in reversed((res.get("data") or {}).get("messages") or []):
+            if float(msg.get("time") or 0) < since - 10:
+                break
+            for seg in (msg.get("message") or []):
+                if seg.get("type") in ("json", "forward", "node"):
+                    return True
+        return False
 
     @staticmethod
     def _pages(title: str, entries: list) -> list[str]:
