@@ -1681,6 +1681,17 @@ class FishPlugin(Star):
                     yield event.plain_result(random.choice(["？", "咋了", "在呢", "你说"]))
                 event.stop_event()
                 return
+            # 私聊的戳一戳不会走 PokeEvent，而是以「只有 Poke 段」的消息进来。
+            # 这里不认，原生流程就会拿它当普通消息，模型自己猜「大概是在戳我」，
+            # 于是冒出一句莫名其妙的回应——线上真出过这事
+            poked_me = any(
+                isinstance(s, Poke) and str(getattr(s, "id", "")) == str(event.get_self_id())
+                for s in (event.message_obj.message or [])
+            )
+            if poked_me:
+                async for r in self.on_poke(event):
+                    yield r
+                return
             # 纯语音/表情/卡片：不接，但别 stop——语音转文字之类的插件还要处理这条
             if not is_at:
                 return

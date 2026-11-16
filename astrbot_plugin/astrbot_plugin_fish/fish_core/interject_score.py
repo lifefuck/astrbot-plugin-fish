@@ -86,7 +86,9 @@ def score_message_quality(
         score += 0.04
 
     cleaned = re.sub(r"[\s\d\W_]+", "", t)
-    if len(cleaned) <= 1:
+    # 带图带卡片时「字少」不是缺点——图本身就是内容。群里的真实形态就是
+    # 甩一张图配两个字，这时候再按「过短」扣分，等于永远不接图
+    if len(cleaned) <= 1 and not has_image and not has_media:
         score -= 0.20
         hits.append("过短")
     if re.fullmatch(r"(哈+|6+|草+|啊+|嗯+|哦+|好+)", cleaned or ""):
@@ -95,7 +97,9 @@ def score_message_quality(
 
     now = time.time() if now is None else now
     if last_msg_ts > 0 and (now - last_msg_ts) >= 600.0:
-        score += 0.10
+        # 冷场是真人最容易开口的时刻（没人说话才轮得到你起话头），
+        # 权重得压得住「过短」的扣分，否则半夜群里永远是不理人
+        score += 0.15
         hits.append("冷场")
     elif last_bot_reply_ts > 0 and (now - last_bot_reply_ts) < 600.0:
         score += 0.05
