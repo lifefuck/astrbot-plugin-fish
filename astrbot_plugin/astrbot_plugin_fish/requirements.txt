@@ -1,4 +1,7 @@
-# 语音转文字要用：QQ 语音是 silk，先把 silk 解成 pcm 再交给 ffmpeg
+# 语音转文字：QQ 语音是 silk，先解成 pcm 再交给 ffmpeg
 silk-python>=0.2.9
-# 系统还得有 ffmpeg（Ubuntu: apt install ffmpeg），它负责 pcm/amr/wav → mp3
+# 画带字的表情包（Rust 引擎的 Python 绑定）。
+# 装完还要下载一次素材：python -c "import meme_generator.resources as r; r.check_resources()"
+# 实测 403MB，走代理约 25 秒
+meme_generator==0.2.3
 aiohttp>=3.9
