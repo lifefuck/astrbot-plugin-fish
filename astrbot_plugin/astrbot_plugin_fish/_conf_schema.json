@@ -545,5 +545,15 @@
     "description": "转写提示词（留空用内置）",
     "type": "string",
     "default": ""
+  },
+  "meme_gen_enabled": {
+    "description": "自己画带字的表情包（[画图:模板:文字]）",
+    "type": "bool",
+    "default": true
+  },
+  "meme_gen_timeout_sec": {
+    "description": "单张画图超时（秒）",
+    "type": "int",
+    "default": 25
   }
 }
