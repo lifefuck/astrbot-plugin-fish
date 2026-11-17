@@ -9,7 +9,7 @@ Two plugins for [AstrBot](https://github.com/AstrBotDevs/AstrBot) that make a QQ
 Protocol side is NapCat (or any OneBot 11 implementation); the model side is any OpenAI-compatible endpoint.
 
 ```
-astrbot_plugin_fish/        the chat bot: persona, memory, timing, splitting, memes, vision
+astrbot_plugin_fish/        the chat bot: persona, memory, timing, splitting, memes, vision, hearing, drawing
 astrbot_plugin_memory_cmd/  /memary memory lookup, separate plugin, read-only
 ```
 
@@ -34,7 +34,9 @@ The original hand-rolled framework (`bot.py`, its own event loop and dashboard) 
 - **Relationship graph**: remembers who likes @-ing whom and surfaces it as a one-liner before replying, not as a statistics table.
 - **Cross-group**: keeps a short summary of what other groups talked about, and can mention it when relevant.
 - **Text games**: number bomb, dice, draws, name-picking — all local state machines, no tokens spent.
-- **Song requests**: say "I want to hear Sunny Day" in the group and it searches Bilibili, downloads, sends the original file as a voice message, and posts a progress line while it works. See "Song request dependency".
+- **Hearing**: a voice message goes silk → pcm → mp3 → model transcription, then gets answered like any text message. If transcription fails it treats the clip as an unreadable attachment instead of inventing content.
+- **Drawing**: when a line deserves a placard, it picks one of the built-in text meme templates and prints the words itself — no command, same as song requests.
+- **Song requests**: say "I want to hear Sunny Day" in the group and it searches Bilibili, downloads, sends the original file as a voice message, and posts a progress line while it works. Downloaded tracks are cached locally for seven days, and a failed search retries with cleaned-up spellings. See "Song request dependency".
 - **Meme explanations**: when someone asks "what's the deal with X", it looks X up in the meme wiki and injects the answer; if it's not in there it looks it up once and remembers it.
 - **Moderation reports**: in whitelisted groups, ads/recruiting, image spam, and serious abuse get a line in the group plus a DM to the owner (the judgement lives in the prompt; code only strips markers and forwards).
 - **Pokes**: pokes back, then picks up the message that was left unanswered before the poke.
@@ -90,6 +92,9 @@ A few that are easy to miss:
 | `reply_max_chars` | Per-message length cap, to stop essay-length replies |
 | `tech_repeat_window_sec` | Technical-repeat window: the same spec or model number isn't repeated within it |
 | `natural_song` | Natural-language song requests on/off; off means commands only |
+| `hearing_enabled` | Transcribe voice messages. Off falls back to ignoring audio |
+| `hearing_model` / `hearing_timeout_sec` | Which model transcribes, and the per-clip timeout |
+| `meme_gen_enabled` / `meme_gen_timeout_sec` | Draw text memes on its own, and the per-image timeout |
 | `tattle_watch_groups` | Groups where it reports proactively. **Empty = reports nowhere** |
 | `order_guard_enabled` / `order_guard_cooldown_sec` | Moderation patrol master switch and per-group report cooldown |
 
@@ -104,6 +109,20 @@ Song requests don't reimplement search or download; they reuse another plugin:
 - keep both plugins under the same AstrBot `data/plugins/`, with the directory still named `astrbot_plugin_listen_music`.
 
 Missing either one, song requests degrade to "couldn't find that one" and nothing else breaks.
+
+## Voice and drawing dependencies
+
+Both are "works if installed, chats fine without".
+
+**Hearing**: `pip install silk-python` plus `ffmpeg` on the system. QQ voice is silk; it gets decoded to raw pcm, converted to mp3, then transcribed. Without these, clips are skipped as unreadable media.
+
+**Drawing**: `pip install meme_generator==0.2.3`, then pull the template assets once:
+
+```bash
+python -c "import meme_generator.resources as r; r.check_resources()"
+```
+
+Assets run about 403MB (roughly 25s through a proxy) into `~/.meme_generator`. The engine registers 300 templates; the plugin only uses the 70 text-only ones — templates that need an input photo (head-pat, tea-offering) are skipped, and it just talks instead of faking it.
 
 ## Where the memes come from
 
