@@ -1,0 +1,4 @@
+# 语音转文字要用：QQ 语音是 silk，先把 silk 解成 pcm 再交给 ffmpeg
+silk-python>=0.2.9
+# 系统还得有 ffmpeg（Ubuntu: apt install ffmpeg），它负责 pcm/amr/wav → mp3
+aiohttp>=3.9

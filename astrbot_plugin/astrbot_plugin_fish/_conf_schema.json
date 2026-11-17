@@ -524,5 +524,26 @@
     "type": "bool",
     "default": true,
     "hint": "关掉则只走插件自带的直连 Gemini 通道"
+  },
+  "hearing_enabled": {
+    "description": "听懂语音（把语音转成文字）",
+    "type": "bool",
+    "default": true,
+    "hint": "关掉后别人发语音鱼就当没内容，回到「听不到语音」的老行为"
+  },
+  "hearing_model": {
+    "description": "语音转文字用的模型",
+    "type": "string",
+    "default": "gemini-3.5-flash-lite"
+  },
+  "hearing_timeout_sec": {
+    "description": "单条语音转写超时（秒）",
+    "type": "int",
+    "default": 30
+  },
+  "hearing_prompt": {
+    "description": "转写提示词（留空用内置）",
+    "type": "string",
+    "default": ""
   }
 }
