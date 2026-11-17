@@ -134,6 +134,7 @@ fish_memory = _load("fish_memory", "fish_memory.py")
 splitter = _load("splitter", "splitter.py")
 vision = _load("vision", "vision.py")
 hearing = _load("hearing", "hearing.py")
+meme_gen = _load("meme_gen", "meme_gen.py")
 social_read = _load("social_read", "social_read.py")
 peer_bots = _load("peer_bots", "peer_bots.py")
 cross_memory = _load("cross_memory", "cross_memory.py")
@@ -2594,6 +2595,8 @@ class FishPlugin(Star):
         clean, tag = meme_catalog.extract_tag(text)
         # 1.1 剥违规上报标签：模型判完写 [REPORT:广告|理由]，这个标记一个字都不能进群
         clean, report_hit = _extract_report(clean)
+        # 1.2 剥画图标签：模型写 [画图:喜报:今天没人迟到]，这句要变成一张真的图
+        clean, draw_req = meme_gen.extract_tag(clean)
         if report_hit:
             label = "：".join([p for p in report_hit if p])
             if self._order_watch(gid):
@@ -2762,6 +2765,14 @@ class FishPlugin(Star):
         tail = parts[1:]
 
         # 5. 配图：过斗图闸，一回合只发一张；有尾巴时挪到最后一条后面，别插在中间打断话
+        # 画图：模型写了 [画图:模板:文字] 就真画一张。画不出来就当没这个标签，
+        # 正文照发——宁可少一张图，也不能因为它把整句话吞掉
+        drawn_b64 = None
+        if draw_req and self.cfg.get("meme_gen_enabled", True):
+            drawn_b64 = await meme_gen.make(
+                draw_req, float(self.cfg.get("meme_gen_timeout_sec", 25) or 25))
+            logger.info("[fish] 画图「%s」%s", draw_req[:30],
+                        "画好了" if drawn_b64 else "没画出来（模板没匹配或资源缺）")
         meme_b64 = None
         if tag and self.cfg.get("meme_enabled", True):
             ok_meme, why_not = self._meme_gate(gid, st, tag, now)
@@ -2777,8 +2788,12 @@ class FishPlugin(Star):
 
         if meme_b64 and not tail:
             chain.append(Image.fromBase64(meme_b64))
+        if drawn_b64 and not tail:
+            # 单条消息的场景：文字和画好的图塞进同一条链，比分两条发自然
+            chain.append(Image.fromBase64(drawn_b64))
         if tail:
-            event.set_extra("fish_tail", {"gid": gid, "sk": gid, "parts": tail, "meme": meme_b64})
+            event.set_extra("fish_tail", {"gid": gid, "sk": gid, "parts": tail,
+                                          "meme": meme_b64, "drawn": drawn_b64})
             logger.info("[fish] 长回复拆成 %d 条（%s 字）：%s", len(parts), len(final),
                         " / ".join(p[:18] for p in parts))
 
@@ -2904,4 +2919,12 @@ class FishPlugin(Star):
                     logger.info("[fish] 拆条后补发表情包")
                 except Exception as e:
                     logger.warning("[fish] 表情包补发失败: %s", e)
+            drawn = tail.get("drawn") if sent_all else None
+            if drawn:
+                await asyncio.sleep(0.5)
+                try:
+                    await event.send(MessageChain(chain=[Image.fromBase64(drawn)]))
+                    logger.info("[fish] 拆条后补发画好的图")
+                except Exception as e:
+                    logger.warning("[fish] 画图补发失败: %s", e)
 
