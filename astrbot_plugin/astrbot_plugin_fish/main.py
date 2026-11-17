@@ -133,6 +133,7 @@ interject_score = _load("interject_score", "interject_score.py")
 fish_memory = _load("fish_memory", "fish_memory.py")
 splitter = _load("splitter", "splitter.py")
 vision = _load("vision", "vision.py")
+hearing = _load("hearing", "hearing.py")
 social_read = _load("social_read", "social_read.py")
 peer_bots = _load("peer_bots", "peer_bots.py")
 cross_memory = _load("cross_memory", "cross_memory.py")
@@ -662,6 +663,8 @@ class FishPlugin(Star):
         # 这样插件的识图逻辑只剩「取字节 + 兜底」，模型换代/换家都在面板上配，不用改代码
         try:
             vision.set_framework_caller(self._vision_via_framework)
+            # 听觉复用视觉那套 key/连接池/降级链：语音和图片本来就是同一个模型在处理
+            hearing.configure(vision)
         except Exception as e:
             logger.warning("[fish] 框架视觉通道挂不上（仍走直连）：%s: %s", type(e).__name__, e)
 
@@ -1645,6 +1648,10 @@ class FishPlugin(Star):
         now = time.time()
         has_image, has_media = self._has_media(event)
         is_at = self._is_at_bot(event)
+        # 语音单独拎出来：有它就能「听见」，纯语音消息也就不再是空消息
+        recs = [c for c in event.message_obj.message
+                if type(c).__name__.lower() == "record"] \
+            if self.cfg.get("hearing_enabled", True) else []
 
         # 注入防护放在最前面：真要套人设的，不必等到后面调模型再说。
         # 只认「明确在改指令/要系统提示词」的说法，正常技术提问不会被拦
@@ -1730,7 +1737,7 @@ class FishPlugin(Star):
                 event.stop_event()
                 return
 
-        if not text and not has_image:
+        if not text and not has_image and not recs:
             if is_at:
                 # 只是 @ 一下没说话：为一句「？」烧一次模型不值，模型还容易顺着空白
                 # 编出一段客服腔。本地应一声就够，顺手把框架拦住别让它抢答
@@ -1903,10 +1910,13 @@ class FishPlugin(Star):
         how_used = ""
         imgs = [c for c in event.message_obj.message if isinstance(c, Image)] \
             if (has_image and self.cfg.get("vision_enabled", True)) else []
-        verdict, vision_desc = await asyncio.gather(
+        verdict, vision_desc, voice_text = await asyncio.gather(
             self._social_read(gid, st, text, nick, is_at or forced),
             vision.from_components(imgs, self.cfg, logger=logger) if imgs else _noop(),
+            hearing.from_components(recs, self.cfg, logger=logger) if recs else _noop(),
         )
+        if voice_text:
+            logger.info("[fish] 群 %s 语音转写：%s", gid, voice_text[:60])
         if vision_desc:
             logger.info("[fish] 群 %s 图片描述：%s", gid, vision_desc[:80])
         if verdict and not verdict.get("join"):
@@ -1984,11 +1994,17 @@ class FishPlugin(Star):
         # 纯图片消息的 text 是空串。把一个「用户什么都没说」的空位喂给模型，
         # 它会自己脑补一句（真实翻车：回了「？光戳不说话」）。用图片描述顶上位
         prompt_text = text
+        if text and voice_text:
+            # 同一条消息既打字又发语音：两样都给它，别丢掉一半
+            prompt_text = f"{text}（同一句还发了语音，说的是：{voice_text[:100]}）"
         if not prompt_text.strip():
-            prompt_text = f"（发了张图，图里是：{vision_desc[:80]}）" if vision_desc else ""
+            if voice_text:
+                prompt_text = f"（发了段语音，说的是：{voice_text[:120]}）"
+            else:
+                prompt_text = f"（发了张图，图里是：{vision_desc[:80]}）" if vision_desc else ""
             if not prompt_text:
-                logger.info("[fish] 群 %s 只有一张读不出内容的图，不调主模型", gid)
-                self.log_event("skip", gid, "[图片]", who=nick, why="图读不出内容")
+                logger.info("[fish] 群 %s 这条媒体读不出内容（图/语音都没转出来），不调主模型", gid)
+                self.log_event("skip", gid, "[媒体]", who=nick, why="媒体读不出内容")
                 await self._remember(gid, uid, text)
                 self._release_claim(st)
                 if is_at:

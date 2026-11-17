@@ -104,6 +104,8 @@ def _read_env_file(path: str) -> dict:
     """读 KEY=VALUE 形式的 env 文件，带 mtime 缓存。"""
     if not path:
         return {}
+    # 配置里默认写的是 ~/.config/...，不展开就是「文件不存在」，key 直接读不到
+    path = os.path.expanduser(path)
     try:
         mtime = os.path.getmtime(path)
     except OSError:
@@ -368,6 +370,14 @@ async def _component_bytes(comp, session: aiohttp.ClientSession, logger=None) ->
         return None
     # 无 scheme：AstrBot 有时给的是本地路径
     return await asyncio.to_thread(_read_local, path or src)
+
+
+async def component_bytes(comp, logger=None) -> bytes | None:
+    """对外入口：拿一个消息组件的原始字节（图片、语音都走这里）。
+
+    复用同一套 SSRF 防护和连接池——语音的 url 同样是对方给的，不能绕过这层检查。
+    """
+    return await _component_bytes(comp, _get_session(), logger=logger)
 
 
 # ---------------------------------------------------------------- 缩图 / 请求
