@@ -133,8 +133,107 @@ class SongService:
             message=[{"type": "text", "data": {"text": text}}],
         )
 
-    async def play(self, event, query: str, session_id: str, gid: str, on_stage=None) -> bool:
-        """搜到就发语音；任何一步失败都返回 False，由调用方决定怎么圆场。
+    async def play(self, event, query: str, session_id: str, gid: str, on_stage=None):
+        """点歌入口：先看缓存，再按几种写法依次搜。
+
+        为什么要有缓存：同一首歌一晚上被点三次很正常，每次重新搜+下载要三十秒，
+        群里就是三次「点了没反应」。缓存按清洗后的歌名存，跟站上标题无关。
+        """
+        await self._ensure()
+        hit = self._cache_get(query)
+        if hit:
+            logger.info("[fish] 点歌「%s」命中缓存，直接发", query)
+            if on_stage is not None:
+                try:
+                    await on_stage(query)
+                except Exception as e:
+                    logger.debug("[fish] 点歌进度提示没发出去：%s", e)
+            return await self._send_path(event, gid, hit)
+        for q in self._variants(query):
+            ok = await self._play_once(event, q, session_id, gid, on_stage)
+            if ok == "nocand":
+                # 只有「一首都没搜到」才值得换个写法再搜一次；
+                # 搜到了但不符合条件（太长/太短）说明名字是对的，重试没意义
+                continue
+            return ok
+        logger.info("[fish] 点歌「%s」试过 %s，都没搜到", query, "、".join(self._variants(query)))
+        return False
+
+    def _variants(self, query: str) -> list:
+        """把歌名换几种常见写法。B 站搜索对多出来的修饰词很敏感。"""
+        import re as _re
+        base = _re.sub(r"[《》「」\"\'“”]", "", str(query or "")).strip()
+        out = [base] if base else []
+        # 去掉括号里的补充说明：「晴天（现场版）」「起风了 feat.xxx」
+        no_paren = _re.sub(r"[（(【\[].*?[)）】\]]", "", base).strip()
+        if no_paren and no_paren not in out:
+            out.append(no_paren)
+        # 去掉版本后缀：无损/高音质/完整版/翻唱 这些是搜索词，不是歌名的一部分
+        no_tag = _re.sub(r"\s*(无损|高音质|完整版|mv|MV|现场版|翻唱|remix|Remix)$", "", no_paren or base).strip()
+        if no_tag and no_tag not in out:
+            out.append(no_tag)
+        return out[:3]
+
+    def _cache_dir(self) -> str:
+        d = os.path.join(self._media_dir, "cache")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _cache_get(self, query: str):
+        """命中返回文件路径，过期或不存在返回 None。7 天没被点到就让它自然淘汰。"""
+        import hashlib
+        p = os.path.join(self._cache_dir(), hashlib.sha1(
+            str(query).strip().lower().encode()).hexdigest() + ".mp3")
+        try:
+            if os.path.exists(p) and os.path.getsize(p) > 0 \
+                    and time.time() - os.path.getmtime(p) < 7 * 86400:
+                return p
+        except OSError:
+            pass
+        return None
+
+    def _cache_put(self, query: str, src: str) -> None:
+        """把下好的文件拷进缓存目录。
+
+        必须拷贝而不是记路径：media 目录每次初始化都会 reclaim_stale 整个清空，
+        记下来的路径第二天就指向一个不存在的文件。
+        """
+        import hashlib, shutil
+        try:
+            dst = os.path.join(self._cache_dir(), hashlib.sha1(
+                str(query).strip().lower().encode()).hexdigest() + ".mp3")
+            shutil.copyfile(src, dst)
+            logger.info("[fish] 点歌「%s」已缓存 %.1fMB", query, os.path.getsize(dst) / 1048576)
+        except Exception as e:
+            logger.debug("[fish] 点歌缓存写入失败：%s", e)
+
+    async def _send_path(self, event, gid: str, path: str):
+        """发一个已经在磁盘上的音频文件，返回 True / "uncertain" / False。"""
+        small = ""
+        try:
+            small = path
+            size_mb = os.path.getsize(small) / 1048576
+            if size_mb > _MAX_SEND_MB:
+                logger.info("[fish] 点歌文件 %.1fMB 偏大，先压一版", size_mb)
+                small = await self._shrink(small)
+            try:
+                await asyncio.wait_for(self._send_voice(event, gid, small), 90)
+            except asyncio.TimeoutError:
+                logger.warning("[fish] 点歌发送等回包超时，按已发出处理")
+                return "uncertain"
+            return True
+        except Exception as e:
+            logger.warning("[fish] 点歌发送失败：%s %r", type(e).__name__, e)
+            return False
+        finally:
+            try:
+                if small and small != path and os.path.exists(small):
+                    os.remove(small)
+            except OSError:
+                pass
+
+    async def _play_once(self, event, query: str, session_id: str, gid: str, on_stage=None):
+        """搜到就发语音；搜不到返回 \"nocand\"，别的失败返回 False，由调用方决定怎么圆场。
 
         on_stage(title)：挑中曲目之后回调一次，让上层能马上在群里吭一声，
         别让人干等几十秒还以为没点上。
@@ -152,7 +251,7 @@ class SongService:
         candidates = list(getattr(snapshot, "candidates", ()) or ())
         if not candidates:
             logger.info("[fish] 点歌搜不到「%s」", query)
-            return False
+            return "nocand"
         # 第一首经常是翻唱/剪辑，标题里带原词的那首更像原曲
         flat = query.replace(" ", "")
 
@@ -163,7 +262,7 @@ class SongService:
         usable = [c for c in candidates if _ok(c)]
         if not usable:
             logger.info("[fish] 点歌「%s」只搜到超长/超短音频，不当歌发", query)
-            return False
+            return "nocand"
         # 标题带原词、时长又像首歌的那首最可能是原曲；光看标题会挑到「吉他教学 day4」
         chosen = None
         for cand in usable:
@@ -187,6 +286,11 @@ class SongService:
             time.monotonic() - t0,
             result.media.size_bytes / 1048576,
         )
+        # 下完先存一份：这一首下次被点时直接发，省掉三十秒搜索+下载
+        try:
+            self._cache_put(query, str(result.media.path))
+        except Exception:
+            pass
         small = ""
         try:
             # 原文件直发：少一次有损转换，实测听感明显好，代价是多等几秒
