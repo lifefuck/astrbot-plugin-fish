@@ -658,6 +658,13 @@ class FishPlugin(Star):
             # 面板挂了不该拖死聊天，这里只报警
             logger.warning("[fish] 控制台接口注册失败：%s: %s", type(e).__name__, e)
 
+        # 看图走框架的视觉 provider（data/cmd_config.json 里的 gemini-vision），
+        # 这样插件的识图逻辑只剩「取字节 + 兜底」，模型换代/换家都在面板上配，不用改代码
+        try:
+            vision.set_framework_caller(self._vision_via_framework)
+        except Exception as e:
+            logger.warning("[fish] 框架视觉通道挂不上（仍走直连）：%s: %s", type(e).__name__, e)
+
         logger.info("[fish] 拆条 %s（%d 字起拆，最多 %d 条）；两步生成 %s；看图 %s（%s）",
                     "开" if self.cfg.get("split_enabled", True) else "关",
                     int(self.cfg.get("split_max_chars", 60) or 60),
@@ -685,6 +692,27 @@ class FishPlugin(Star):
                 self._backup_task = asyncio.create_task(self._backup_loop())
             except Exception as e:
                 logger.warning("[fish] 后台备份任务起不来：%s", e)
+
+    async def _vision_via_framework(self, raws: list) -> str:
+        """把图片交给 AstrBot 配好的视觉 provider 描述，失败返回空串（外层转直连）。"""
+        pid = str(self.cfg.get("vision_provider_id") or "gemini-vision")
+        prov = self.context.get_provider_by_id(pid)
+        if prov is None:
+            logger.warning("[fish] 框架里没有 provider %s，视觉转直连", pid)
+            return ""
+        urls = []
+        for raw in raws:
+            if not raw:
+                continue
+            mime = "image/png" if raw[:8].startswith(b"\x89PNG") else "image/jpeg"
+            urls.append(f"data:{mime};base64,{base64.b64encode(raw).decode()}")
+        if not urls:
+            return ""
+        resp = await prov.text_chat(
+            prompt="仔细看这些图，用中文说清画面内容：有没有人、在做什么、是什么表情或梗；判不准就说看不出。",
+            image_urls=urls,
+        )
+        return str(getattr(resp, "completion_text", "") or "").strip()
 
     def _backup_interval(self) -> float:
         return float(self.cfg.get("backup_interval_hours", 24) or 24) * 3600

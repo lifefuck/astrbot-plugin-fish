@@ -167,7 +167,7 @@
   "vision_model": {
     "description": "视觉主模型",
     "type": "string",
-    "default": "gemini-4-hydrogen",
+    "default": "gemini-3.5-flash-lite",
     "hint": "默认 lite：实测 1~2 秒就能把图里的字逐字抄准；gemini-3.8-flash 在这台机器上常 25 秒超时，不适合群聊实时场景。"
   },
   "vision_fallback_models": {
@@ -512,5 +512,17 @@
     "type": "list",
     "default": [],
     "hint": "留空 = 一个群都不上报。只有这里列出的群才会因为违规私聊主人。"
+  },
+  "vision_provider_id": {
+    "description": "框架里的视觉模型（在 AstrBot 模型页配的 provider id）",
+    "type": "string",
+    "default": "gemini-vision",
+    "hint": "留空或框架里找不到这个 id 时，自动回落插件自带的直连通道"
+  },
+  "vision_use_framework_provider": {
+    "description": "优先用框架视觉模型识图",
+    "type": "bool",
+    "default": true,
+    "hint": "关掉则只走插件自带的直连 Gemini 通道"
   }
 }
