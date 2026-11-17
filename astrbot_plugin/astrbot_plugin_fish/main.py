@@ -2649,6 +2649,11 @@ class FishPlugin(Star):
                 # 比对范围必须跟模型看到的窗口一致：只拿最近 5 条去比，
                 # 就会出现「草稿其实在接 10 分钟前那个话头，却被判离题」的误杀
                 ctx = " ".join(str(m.get("text", "")) for m in list(st.msgs)[-40:-1])
+                # 图里的内容根本不在 msgs 里：草稿在聊刚才那张图时，纯文字 ctx 一个词都对不上，
+                # 「这图也敢往群里甩」「这眼神像在审判我」这种正经接茬会被判离题吞掉
+                # （实测 90 分钟吃掉十来条，全是被判接了又咽回去）
+                if vision_desc:
+                    ctx = f"{ctx} {vision_desc}"
                 if ctx and anti_template.is_offtopic(text, ctx):
                     logger.info("[fish] 群 %s 插话草稿离题，静默：%r", gid, text[:24])
                     self.log_event("empty", gid, text[:40], who=meta.get("nick", ""))
