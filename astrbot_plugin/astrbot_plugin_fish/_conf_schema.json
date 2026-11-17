@@ -555,5 +555,20 @@
     "description": "单张画图超时（秒）",
     "type": "int",
     "default": 25
+  },
+  "patrol_judge_gap_sec": {
+    "description": "同一群两次巡检判定的最小间隔（秒），防刷屏时疯狂调模型",
+    "type": "int",
+    "default": 45
+  },
+  "patrol_judge_timeout_sec": {
+    "description": "巡检判定单次超时（秒）",
+    "type": "int",
+    "default": 12
+  },
+  "tattle_intent_timeout_sec": {
+    "description": "「是不是在让我去告状」判定超时（秒）",
+    "type": "int",
+    "default": 10
   }
 }

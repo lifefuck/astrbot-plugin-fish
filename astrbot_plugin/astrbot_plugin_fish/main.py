@@ -135,6 +135,7 @@ splitter = _load("splitter", "splitter.py")
 vision = _load("vision", "vision.py")
 hearing = _load("hearing", "hearing.py")
 meme_gen = _load("meme_gen", "meme_gen.py")
+order_watch = _load("order_watch", "order_watch.py")
 social_read = _load("social_read", "social_read.py")
 peer_bots = _load("peer_bots", "peer_bots.py")
 cross_memory = _load("cross_memory", "cross_memory.py")
@@ -1259,10 +1260,17 @@ class FishPlugin(Star):
             return ""
         self._order_last[str(gid)] = now
         logger.info("[fish] 巡检上报群 %s（%s）：%s", gid, label, str(result)[:100])
+        # 插件返回的是 "Complaint finished: 1 sent, 0 failed." 这种串，
+        # 一个收件人（主人自己）就是成功；0 sent 才算没送出去，那就别在群里吹
+        m = re.search(r"(\d+)\s*sent", str(result) or "", re.I)
+        if m and int(m.group(1)) == 0:
+            logger.warning("[fish] 巡检上报没送出去（0 sent），群里不吭声")
+            self._order_last.pop(str(gid), None)
+            return ""
         return random.choice((
-            "这条我记下来了，已经发给群主了",
-            "行，我截下来给群主看了，等他处理",
-            "这话我兜不住，先报给群主了",
+            "这条我记下来了，回头跟管事的说一声",
+            "行，我截下来了，会有人看的",
+            "这话我兜不住，先往上报了",
         ))
 
     # ---------------- 刹车：静默 / 禁言 / 刷屏 ----------------
@@ -1503,6 +1511,69 @@ class FishPlugin(Star):
             logger.debug("[fish] 找不到告状插件：%s", e)
         return None
 
+    async def _tattle_intent(self, text: str, nick: str):
+        """这句话是「让我去告状」还是「在聊告状这功能」？判不了返回 None。"""
+        try:
+            ans = await self._llm_once(
+                f"{nick}：{text}",
+                order_watch.TATTLE_SYSTEM,
+                float(self.cfg.get("tattle_intent_timeout_sec", 10) or 10),
+            )
+        except Exception as e:
+            logger.warning("[fish] 告状意图判定失败：%s", e)
+            return None
+        up = str(ans or "").strip().upper()
+        if up.startswith("YES"):
+            return True
+        if up.startswith("NO"):
+            return False
+        return None
+
+    def _maybe_patrol(self, event, gid: str, text: str, nick: str, uid: str,
+                      recent: list) -> None:
+        """秩序巡检入口：命中粗筛就起一个后台判定任务。
+
+        跟接话判定完全解耦——判「不接」的那些消息（@的是别人、质量分不够、冷却中）
+        原来一次模型都不调，等于把对着骂和刷广告的全放过去了。
+        """
+        if not self._order_watch(gid):
+            return
+        if str(uid) == str(event.get_self_id()):
+            return
+        hint = order_watch.suspicious(text, recent)
+        if not hint:
+            return
+        now = time.time()
+        gap = float(self.cfg.get("patrol_judge_gap_sec", 45) or 45)
+        if now - self._order_last.get("judge:" + str(gid), 0.0) < gap:
+            return
+        self._order_last["judge:" + str(gid)] = now
+        asyncio.create_task(self._patrol(event, gid, text, nick, uid, hint))
+
+    async def _patrol(self, event, gid: str, text: str, nick: str, uid: str, hint: str) -> None:
+        """粗筛命中 → 模型判一次 → 真要报就私聊 + 群里说一句。"""
+        try:
+            ans = await self._llm_once(
+                order_watch.judge_prompt(hint, nick, text, self.cfg.get("bot_nickname", "机器人")),
+                order_watch.JUDGE_SYSTEM,
+                float(self.cfg.get("patrol_judge_timeout_sec", 12) or 12),
+            )
+        except Exception as e:
+            logger.warning("[fish] 巡检判定失败：%s", e)
+            return
+        if "YES" not in str(ans or "").upper()[:8]:
+            logger.info("[fish] 群 %s 粗筛命中「%s」但模型判不算（%s），不报：%s",
+                        gid, hint, str(ans)[:20], text[:30])
+            return
+        line = await self._report_order(event, gid, nick, uid, text, hint)
+        if not line:
+            return
+        try:
+            await event.send(MessageChain(chain=[Plain(line)]))
+            logger.info("[fish] 群 %s 巡检已在群里提示：%s", gid, line)
+        except Exception as e:
+            logger.warning("[fish] 巡检群里提示没发出去：%s", e)
+
     async def _try_tattle(self, event, text: str) -> bool:
         """群友说要告状，就把原话私发给配置里的接收人（群里不出声）。"""
         inst = self._tattle_plugin()
@@ -1520,7 +1591,10 @@ class FishPlugin(Star):
         except Exception as e:
             logger.warning("[fish] 告状转达失败：%r", e)
             return False
-        ok = "failed" not in str(result).lower()
+        # 别拿 "failed" 当关键字：正常返回串是 "1 sent, 0 failed."，一出现 failed 就判失败，
+        # 结果每条都记成「告状转达失败」，实际早就送到了
+        m = re.search(r"(\d+)\s*sent", str(result) or "", re.I)
+        ok = bool(m and int(m.group(1)) > 0) if m else True
         logger.info("[fish] 告状转达%s：%s", "成功" if ok else "失败", str(result)[:120])
         return ok
 
@@ -1732,11 +1806,20 @@ class FishPlugin(Star):
                 event.stop_event()
                 return
 
-        # 说要告状就直接私发给接收人，自己不接话
-        if self.cfg.get("natural_tattle", True) and text and _is_tattle_request(text):
-            if await self._try_tattle(event, text):
+        # 说要告状就直接私发给接收人，自己不接话。
+        # 只认关键词太蠢：群里聊「它会自动告状」也被当成请求转过去（实测就是这样）。
+        # 现在三层：关键词初筛 → 必须是对着它说 → 模型确认这是「让我去告状」而不是在讨论功能
+        if (self.cfg.get("natural_tattle", True) and text and _is_tattle_request(text)
+                and (is_at or is_follow or str(uid) == str(self.cfg.get("owner_qq") or ""))):
+            asked = await self._tattle_intent(text, nick)
+            if asked is None:
+                # 判官挂了就按原样转，宁可多转一次，也别让人喊了没人管
+                asked = True
+            if asked and await self._try_tattle(event, text):
                 event.stop_event()
                 return
+            elif not asked:
+                logger.info("[fish] 群 %s 提到了告状，但看着是在聊功能不是求我办事，不转", gid)
 
         if not text and not has_image and not recs:
             if is_at:
@@ -1855,6 +1938,13 @@ class FishPlugin(Star):
                 event.stop_event()
                 yield event.plain_result(acted)
                 return
+
+        # ---------------- 秩序巡检 ----------------
+        # 必须在接话判定之前：判「不接」的那些消息（@的是别人 / 质量分不够 / 冷却中）
+        # 原来一次模型都不调，等于把对着骂和刷广告的全放过去了
+        if text.strip():
+            self._maybe_patrol(event, gid, text, nick, uid,
+                               [m["text"] for m in list(st.msgs)[-6:]])
 
         # ---------------- 该不该开口 ----------------
         if is_at or forced:
