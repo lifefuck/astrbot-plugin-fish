@@ -436,10 +436,39 @@ async def _one_model(session: aiohttp.ClientSession, key: str, model: str, parts
     return "".join(texts).strip()
 
 
+# 框架视觉通道：AstrBot 里配了带图片能力的 provider（gemini-vision）之后，
+# 识别交给框架做，本文件自己的直连链路只当兜底。
+# 为什么留兜底而不是删干净：框架 provider 被停用/额度打满时，鱼会突然「瞎」，
+# 那时候宁可多花一次直连请求，也别让群里发图没人应。
+_framework_caller = None
+
+
+def set_framework_caller(fn) -> None:
+    """由 main.py 在初始化时注入：async fn(list[bytes]) -> str"""
+    global _framework_caller
+    _framework_caller = fn
+
+
+async def _describe_via_framework(images: list[bytes], cfg: dict, logger=None) -> str:
+    if _framework_caller is None or not cfg.get("vision_use_framework_provider", True):
+        return ""
+    try:
+        text = await _framework_caller(images)
+    except Exception as e:
+        # 拿不到就往下走直连，不在这里吞成「图中没有内容」
+        if logger:
+            logger.warning("[fish] 框架视觉失败（改用直连）：%s: %s", type(e).__name__, str(e)[:80])
+        return ""
+    return (text or "").strip()
+
+
 async def _describe_raw(images: list[bytes], cfg: dict, logger=None) -> str:
     """images：原始图片字节。全部失败返回 \"\"。"""
     if not images:
         return ""
+    via_fw = await _describe_via_framework(images, cfg, logger=logger)
+    if via_fw:
+        return via_fw
     key, src = resolve_key(cfg)
     if not key:
         if logger:
