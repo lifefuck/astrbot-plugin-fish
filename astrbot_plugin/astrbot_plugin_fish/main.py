@@ -1268,9 +1268,9 @@ class FishPlugin(Star):
             self._order_last.pop(str(gid), None)
             return ""
         return random.choice((
-            "这条我记下来了，回头跟管事的说一声",
-            "行，我截下来了，会有人看的",
-            "这话我兜不住，先往上报了",
+            "这条我记下了",
+            "行，记一笔",
+            "这个我记住了，别当我没听见",
         ))
 
     # ---------------- 刹车：静默 / 禁言 / 刷屏 ----------------
@@ -1540,6 +1540,11 @@ class FishPlugin(Star):
             return
         if str(uid) == str(event.get_self_id()):
             return
+        # 主人自己骂人不用上报：接收人就是他，等于把他的话再发回给他一遍，
+        # 群里还会多一句「已经上报了」，纯属自导自演
+        owner = str(self.cfg.get("owner_qq") or "").strip()
+        if owner and str(uid) == owner:
+            return
         hint = order_watch.suspicious(text, recent)
         if not hint:
             return
@@ -1548,13 +1553,29 @@ class FishPlugin(Star):
         if now - self._order_last.get("judge:" + str(gid), 0.0) < gap:
             return
         self._order_last["judge:" + str(gid)] = now
-        asyncio.create_task(self._patrol(event, gid, text, nick, uid, hint))
+        asyncio.create_task(
+            self._patrol(event, gid, text, nick, uid, hint, self._at_bot(event)))
 
-    async def _patrol(self, event, gid: str, text: str, nick: str, uid: str, hint: str) -> None:
+    def _at_bot(self, event) -> bool:
+        """这条消息有没有直接 @ 机器人。判定「骂的是不是它」时很关键：
+        QQ 里「这傻逼 bot 好烦」@ 的是别人，其实是在跟群友吐槽。"""
+        try:
+            segs = getattr(event.message_obj, "message", None) or []
+            self_id = str(event.get_self_id())
+            for seg in segs:
+                if getattr(seg, "type", "") == "at" and str(getattr(seg, "qq", "") or "") == self_id:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    async def _patrol(self, event, gid: str, text: str, nick: str, uid: str, hint: str,
+                      at_bot: bool = False) -> None:
         """粗筛命中 → 模型判一次 → 真要报就私聊 + 群里说一句。"""
         try:
             ans = await self._llm_once(
-                order_watch.judge_prompt(hint, nick, text, self.cfg.get("bot_nickname", "机器人")),
+                order_watch.judge_prompt(hint, nick, text, self.cfg.get("bot_nickname", "机器人"),
+                                         at_bot),
                 order_watch.JUDGE_SYSTEM,
                 float(self.cfg.get("patrol_judge_timeout_sec", 12) or 12),
             )
