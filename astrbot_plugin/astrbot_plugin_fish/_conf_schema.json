@@ -570,5 +570,15 @@
     "description": "「是不是在让我去告状」判定超时（秒）",
     "type": "int",
     "default": 10
+  },
+  "follow_reply_cap": {
+    "description": "追问窗口内，这个时长里最多由它再发几条（0=不限），防碎嘴",
+    "type": "int",
+    "default": 3
+  },
+  "follow_reply_window_sec": {
+    "description": "上面那个条数的统计窗口（秒）",
+    "type": "int",
+    "default": 180
   }
 }

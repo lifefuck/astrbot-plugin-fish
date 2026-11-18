@@ -1985,6 +1985,18 @@ class FishPlugin(Star):
                 self.log_event("skip", gid, text[:60], who=nick, why="追问窗口·刚回过")
                 await self._remember(gid, uid, text)
                 return
+            # 追问窗口不是免死金牌。实测两个人聊旧事，鱼 2 分钟插了 4 条，
+            # 群里就是一串黏人的碎嘴；窗口期内自己说的话也得计入总密度
+            _cap = int(self.cfg.get("follow_reply_cap", 3) or 0)
+            _cap_win = float(self.cfg.get("follow_reply_window_sec", 180) or 180)
+            if _cap:
+                _recent = [t for t in st.reply_times if now - t <= _cap_win]
+                if len(_recent) >= _cap:
+                    logger.info("[fish] 群 %s %d 秒内已经说了 %d 条，追问窗口这轮也先不说",
+                                gid, int(_cap_win), len(_recent))
+                    self.log_event("skip", gid, text[:60], who=nick, why="追问窗口·说太密")
+                    await self._remember(gid, uid, text)
+                    return
             reason = "追问窗口"
             logger.info("[fish] 群 %s %s 在追问窗口内（剩 %d 次），直接回", gid, nick, st.follow_left)
         else:
