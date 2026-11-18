@@ -1556,6 +1556,74 @@ class FishPlugin(Star):
         asyncio.create_task(
             self._patrol(event, gid, text, nick, uid, hint, self._at_bot(event)))
 
+    async def _quote_context(self, event) -> str:
+        """把「引用回复」和「合并转发」的内容取出来放进 prompt。
+
+        框架其实已经调过 get_msg，Reply 段上直接带了被引用的原文（message_str），
+        鱼以前只拿 sender_id 判「是不是回我」，原文全丢了；合并转发更惨，
+        段里只有一个 id，内容从来没人拉过。所以群里「你看看这个」+ 引用发过来，
+        鱼只看见三个字。
+        """
+        parts = []
+        for comp in (event.message_obj.message or []):
+            kind = type(comp).__name__.lower()
+            if kind == "reply":
+                qt = str(getattr(comp, "message_str", "") or "").strip()
+                if not qt:
+                    # 有的平台不填 message_str，退一步从 chain 里拼
+                    chain = getattr(comp, "chain", None) or []
+                    qt = " ".join(str(getattr(c, "text", "") or "") for c in chain).strip()
+                who = str(getattr(comp, "sender_nickname", "") or "").strip()
+                if qt:
+                    parts.append(f"【他引用了{who or '某人'}的消息】{qt[:200]}")
+            elif kind in ("forward", "nodes", "node"):
+                fid = str(getattr(comp, "id", "") or getattr(comp, "message_id", "") or "")
+                txt = ""
+                if fid:
+                    try:
+                        res = await asyncio.wait_for(
+                            event.bot.call_action("get_forward_msg", message_id=fid), 6)
+                        txt = self._flatten_forward(res)
+                    except Exception as e:
+                        logger.debug("[fish] 合并转发取内容失败：%s", e)
+                parts.append(f"【他发了一份聊天记录】{txt[:400] if txt else '（内容没取到）'}")
+        return "\n".join(parts)
+
+    @staticmethod
+    def _flatten_forward(res) -> str:
+        """把 get_forward_msg 的节点列表拍成「昵称：内容 / 昵称：内容」。"""
+        data = (res or {}).get("data") if isinstance(res, dict) else None
+        data = data or res or {}
+        if not isinstance(data, dict):
+            return ""
+        nodes = data.get("messages") or data.get("message") or []
+        lines = []
+        for node in nodes[:12]:
+            if not isinstance(node, dict):
+                continue
+            sender = (node.get("sender") or {}).get("nickname") or node.get("nickname") or ""
+            segs = node.get("message") or node.get("content") or []
+            if isinstance(segs, str):
+                segs = [{"type": "text", "data": {"text": segs}}]
+            buf = []
+            for seg in segs:
+                if not isinstance(seg, dict):
+                    continue
+                st = seg.get("type")
+                d = seg.get("data") or {}
+                if st == "text":
+                    buf.append(str(d.get("text") or ""))
+                elif st == "image":
+                    buf.append("[图片]")
+                elif st in ("face", "mface"):
+                    buf.append("[表情]")
+                elif st == "at":
+                    buf.append("@" + str(d.get("qq") or ""))
+            t = "".join(buf).strip()
+            if t:
+                lines.append(f"{sender}：{t[:80]}")
+        return " / ".join(lines)
+
     def _at_bot(self, event) -> bool:
         """这条消息有没有直接 @ 机器人。判定「骂的是不是它」时很关键：
         QQ 里「这傻逼 bot 好烦」@ 的是别人，其实是在跟群友吐槽。"""
@@ -1732,6 +1800,16 @@ class FishPlugin(Star):
             logger.debug("[fish] 群 %s 面板指令前缀，跳过：%s", gid, text[:20])
             return
 
+        # 引用/合并转发的内容得单独捞：框架只给了 id 和（引用场景下的）原文，
+        # 不捞就等于把「这条你听听」的上下文整段丢掉
+        quote_ctx = ""
+        if any(type(c).__name__.lower() in ("reply", "forward", "nodes", "node")
+               for c in (event.message_obj.message or [])):
+            try:
+                quote_ctx = await self._quote_context(event)
+            except Exception as e:
+                logger.debug("[fish] 取引用内容失败：%s", e)
+
         nick = event.get_sender_name() or uid
         # 别的机器人：不接、不进时间线、不占插话机会。
         # 它的播报被当成人话去接、或者跟它对吵刷屏，都是事故；名单见 data/peer_bots.json
@@ -1842,7 +1920,7 @@ class FishPlugin(Star):
             elif not asked:
                 logger.info("[fish] 群 %s 提到了告状，但看着是在聊功能不是求我办事，不转", gid)
 
-        if not text and not has_image and not recs:
+        if not text and not has_image and not recs and not quote_ctx:
             if is_at:
                 # 只是 @ 一下没说话：为一句「？」烧一次模型不值，模型还容易顺着空白
                 # 编出一段客服腔。本地应一声就够，顺手把框架拦住别让它抢答
@@ -2126,6 +2204,9 @@ class FishPlugin(Star):
                 prompt_text = f"（发了段语音，说的是：{voice_text[:120]}）"
             else:
                 prompt_text = f"（发了张图，图里是：{vision_desc[:80]}）" if vision_desc else ""
+            if quote_ctx:
+                # 只有转发/引用、没打字的：拿内容顶上位，别当空消息丢掉
+                prompt_text = quote_ctx
             if not prompt_text:
                 logger.info("[fish] 群 %s 这条媒体读不出内容（图/语音都没转出来），不调主模型", gid)
                 self.log_event("skip", gid, "[媒体]", who=nick, why="媒体读不出内容")
@@ -2135,6 +2216,9 @@ class FishPlugin(Star):
                     # 被 @ 却不回，必须拦下来，否则框架默认 LLM 会用另一副口气回一句
                     event.stop_event()
                 return
+        # 有正文也有引用：两样都给模型，不然「你看看这个」接不上引用的是啥
+        if quote_ctx and prompt_text and quote_ctx not in prompt_text:
+            prompt_text = f"{prompt_text}\n{quote_ctx}"
         try:
             system_prompt, user_prompt = await self._compose(
                 gid, uid, nick, prompt_text, is_at, st, self_id=self_id,
