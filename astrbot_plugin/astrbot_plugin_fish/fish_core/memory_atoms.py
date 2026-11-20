@@ -56,6 +56,7 @@ THEME_WORDS = ("投喂", "戳", "对线", "调侃", "找茬", "挑刺", "阴阳"
 __all__ = [
     "similarity", "is_refinement", "classify_level", "normalize", "migrate",
     "apply_decay", "add_note", "mark_used", "render", "stats",
+    "DISTILL_SYSTEM", "distill_prompt", "clean_distilled",
 ]
 
 
@@ -230,6 +231,46 @@ def _trim(atoms, now=None):
         return keep[:MAX_NOTES]
     ranked = sorted(rest, key=lambda a: (_score(a, now), int(a.get("hits", 0))), reverse=True)
     return keep + ranked[:MAX_NOTES - len(keep)]
+
+
+# 规则只能看「这句话里有没有『我喜欢』」，分不出是玩笑、是转述、还是拆了一半的半句，
+# 于是档案里躺着「我叫XX过去帮你弄干净吧」「然后表示这东西我很喜欢」。
+# 这一步交给模型：给它一句话，要么给一条印象，要么说「无」。
+DISTILL_SYSTEM = (
+    "你在给群里的一个人建档案。给你他刚说的一句话，判断它是不是关于这个人的长期信息。\n"
+    "是：用不超过 8 个字给他留一条印象。不是：只输出「无」。\n"
+    "只输出结果本身，不要解释、不要引号、不要写「印象：」。\n"
+    "算长期信息：他自称的名字、城市、年龄、职业、正在用的设备、他喜欢或讨厌的东西、"
+    "他的固定习惯、他反复提的同一件事。\n"
+    "不算：一时情绪（受不了了、好烦）、问句、转述别人的话或复述自己刚说的话、"
+    "假设和比喻（我要是亿万富翁）、拆了一半的半句、正在做的事（刚吃完饭）、"
+    "对别人的评价、跟人放狠话（我叫人过去帮你弄干净）。\n"
+    "例子：\n"
+    "「我在日本东京，我叫XX」→ 自称在日本\n"
+    "「我有一个角色皮，我喜欢了两三年，我都没有买」→ 喜欢某个角色皮\n"
+    "「我叫XX过去帮你弄干净吧」→ 无\n"
+    "「哎呦，我受不了了」→ 无\n"
+    "「然后表示这东西我很喜欢」→ 无\n"
+    "「我用小米14Pro，root过」→ 用小米14Pro\n"
+)
+
+
+def distill_prompt(text: str) -> str:
+    return f"他说：{text}"
+
+
+def clean_distilled(raw: str) -> str:
+    """模型爱加引号、写「印象：」、后面补一句解释。削成一条干净印象，不合格返回空。"""
+    lines = [ln.strip() for ln in (raw or "").splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    t = re.sub(r"^(印象|答案|结果)[:：]\s*", "", lines[0])
+    t = t.strip("「」『』\"'“”·。，, ")
+    if not t or t in ("无", "没有", "无印象", "none", "None"):
+        return ""
+    if len(t) > 20:            # 一句话读不完的就不是印象，是复述
+        return ""
+    return t
 
 
 def add_note(atoms, text, now=None):

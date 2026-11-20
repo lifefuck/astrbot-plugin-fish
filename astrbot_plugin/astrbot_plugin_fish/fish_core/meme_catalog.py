@@ -47,12 +47,54 @@ _by_emotion: Dict[str, List[dict]] = collections.defaultdict(list)
 _by_keyword: Dict[str, List[dict]] = collections.defaultdict(list)
 _recent_paths: collections.deque = collections.deque(maxlen=12)
 
+# stealer 插件（群里偷表情包那个）把图存在自己的 plugin_data 下，按英文情绪分目录。
+# 它的目录和本索引完全不搭界，等于偷了 91 张一张也用不上；这里按情绪映射并进来，
+# 让偷来的图和原目录的 138 张一起参与选图。
+STEALER_DIR = os.path.normpath(os.path.join(
+    _SCRIPT_DIR, "..", "..", "..", "plugin_data", "astrbot_plugin_stealer", "categories"))
+_STEALER_EMO: Dict[str, str] = {
+    "happy": "卖萌", "love": "心动", "shy": "卖萌", "embarrassed": "卖萌",
+    "excitement": "得意", "thank": "得意", "troll": "嘲讽", "disgust": "嫌弃",
+    "dumb": "无奈", "sigh": "摆烂", "tired": "睡觉", "sad": "委屈",
+    "cry": "哭泣", "angry": "愤怒", "confused": "困惑",
+    "surprised": "震惊", "fear": "震惊",
+}
+
+
+def _load_stealer() -> None:
+    if not os.path.isdir(STEALER_DIR):
+        return
+    added = 0
+    for cat in sorted(os.listdir(STEALER_DIR)):
+        cdir = os.path.join(STEALER_DIR, cat)
+        if not os.path.isdir(cdir):
+            continue
+        emo = _STEALER_EMO.get(cat.lower(), "")
+        if not emo:
+            continue
+        for fn in sorted(os.listdir(cdir)):
+            if not fn.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
+                continue
+            it = {
+                "file_path": os.path.join(cdir, fn),
+                "emotion": emo,
+                "keywords": [cat, emo],
+                "desc": "群里偷来的表情包",
+            }
+            _by_emotion[emo].append(it)
+            for kw in it["keywords"]:
+                _by_keyword[kw].append(it)
+            added += 1
+    if added:
+        logger.info("stealer 偷来的表情包并入索引: %d 张", added)
+
 
 def _load() -> None:
     if _by_emotion:
         return
     if not os.path.exists(CATALOG_FILE):
         logger.warning("表情包索引不存在: %s", CATALOG_FILE)
+        _load_stealer()
         return
     try:
         with open(CATALOG_FILE, "r", encoding="utf-8-sig") as f:
@@ -77,6 +119,7 @@ def _load() -> None:
             if len(kw) >= 2:
                 _by_keyword[kw].append(it)
     logger.info("表情包索引载入完成: %d 条，%d 个情绪标签", len(items), len(_by_emotion))
+    _load_stealer()
 
 
 _STRAY_TAG_RE = re.compile(r"\[\s*[A-Za-z]{2,10}\s*[:：][^\]\n]{0,12}\]")
@@ -145,11 +188,13 @@ MAX_BYTES = 1200 * 1024  # 再大就会撑爆 WebSocket
 def _pick_file(items: List[dict]) -> Optional[str]:
     if not items:
         return None
-    # 先按体积筛一遍，别挑中了才发现发不出去
+    # 只校验文件还在。体积不在这里筛：一个桶可能全是大图，筛干净就等于
+    # 「这个情绪永远发不出图」（实测「赞同」「干饭」两桶因此常年发错别桶的图），
+    # 改成读的时候压一压
     usable = []
     for it in items:
         try:
-            if os.path.getsize(it["file_path"]) <= MAX_BYTES:
+            if os.path.getsize(it["file_path"]) > 0:
                 usable.append(it)
         except OSError:
             continue
@@ -170,24 +215,78 @@ FALLBACK = {
     "震惊": ("困惑", "卖萌"),
 }
 
-def pick_b64(tag: str = "", text: str = "") -> Optional[str]:
-    """按情绪标签优先、文本关键词兜底挑一张图，返回 base64；挑不到返回 None"""
-    path = None
-    if tag:
-        for candidate in (tag,) + FALLBACK.get(tag, ()):
-            path = _pick_file(_candidates_for_tag(candidate))
-            if path:
-                break
-    if not path:
-        path = _pick_file(_candidates_for_text(text))
-    if not path:
-        return None
+def _read_capped(path: str) -> Optional[str]:
+    """读成 base64。超限就压：静图降质量再降尺寸，动图取首帧——
+
+    原来超限直接当没有，但「干饭」桶只有一张 5.4MB 的 gif，等于这个情绪
+    永远发不出图，只能掉到 FALLBACK 去发「卖萌」的图，看着就是发错意思。
+    """
     try:
         with open(path, "rb") as f:
-            return base64.b64encode(f.read()).decode()
+            raw = f.read()
     except Exception as e:
         logger.warning("读取表情包失败 %s: %s", path, e)
         return None
+    if len(raw) <= MAX_BYTES:
+        return base64.b64encode(raw).decode()
+    try:
+        import io
+
+        from PIL import Image
+
+        im = Image.open(io.BytesIO(raw))
+        is_gif = path.lower().endswith(".gif")
+        im.seek(0)  # 动图只取首帧
+        if im.mode in ("RGBA", "LA", "P"):
+            # 透明底压 JPEG 会变黑边，先垫白
+            im = im.convert("RGBA")
+            bg = Image.new("RGB", im.size, (255, 255, 255))
+            bg.paste(im, mask=im.split()[-1])
+            im = bg
+        else:
+            im = im.convert("RGB")
+
+        # 先降质量，不行再缩尺寸，一共最多五轮；表情包这个体积怎么都够
+        for scale in (1.0, 0.85, 0.7, 0.55, 0.4):
+            frame = im
+            if scale < 1.0:
+                w, h = im.size
+                frame = im.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
+            for q in (86, 74, 62):
+                buf = io.BytesIO()
+                frame.save(buf, format="JPEG", quality=q, optimize=True)
+                if buf.tell() <= MAX_BYTES:
+                    if is_gif:
+                        logger.info("表情包 %s 动图超限，改发首帧", os.path.basename(path))
+                    return base64.b64encode(buf.getvalue()).decode()
+        return None
+    except Exception as e:
+        logger.warning("压缩表情包失败 %s: %s", path, e)
+        return None
+
+
+def _try_pick(items: List[dict], tries: int = 4) -> Optional[str]:
+    """挑一张并读出来。挑中的万一读/压失败（坏文件），换一张再试，别一次就放弃。"""
+    if not items:
+        return None
+    for _ in range(tries):
+        path = _pick_file(items)
+        if not path:
+            return None
+        b64 = _read_capped(path)
+        if b64:
+            return b64
+    return None
+
+
+def pick_b64(tag: str = "", text: str = "") -> Optional[str]:
+    """按情绪标签优先、文本关键词兜底挑一张图，返回 base64；挑不到返回 None"""
+    if tag:
+        for candidate in (tag,) + FALLBACK.get(tag, ()):
+            b64 = _try_pick(_candidates_for_tag(candidate))
+            if b64:
+                return b64
+    return _try_pick(_candidates_for_text(text))
 
 
 def stats() -> Dict[str, int]:

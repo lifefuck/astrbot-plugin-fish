@@ -102,8 +102,13 @@ WEAK_PATTERNS = [
     r"(?:背|念|复述|重复|打印|输出|贴出来|发出来)",
 ]
 
+_WEAK_OFFSET = len(STRONG_PATTERNS)
 INJECTION_PATTERNS: List[str] = STRONG_PATTERNS + WEAK_PATTERNS
 INJECTION_REGEXES = [re.compile(p, re.IGNORECASE) for p in INJECTION_PATTERNS]
+# 弱信号必须真的在说「你/你的人设」才作数。少了这道，实测「不要身份证照片」
+# （"不要"+"身份"）「这游戏能重置角色吗」「忘掉设定闹钟」都会被当成越狱，
+# 然后当着全群回一句「又在念上古越狱咒语」，还把这个正经问题本身吞掉
+_WEAK_TARGET_RE = re.compile(r"(你|您|人设|人格|提示词|system\s*prompt|prompt)", re.I)
 
 # 傲娇反讽怼人话术池（被拦不装死，也不当应声虫）
 INJECTION_SNARKY_REPLIES = [
@@ -128,9 +133,13 @@ def check_prompt_injection(text: str) -> Tuple[bool, Optional[str]]:
     clean = unicodedata.normalize("NFKC", str(text)).strip()
     if not clean:
         return False, None
-    for reg in INJECTION_REGEXES:
-        if reg.search(clean):
-            return True, random.choice(INJECTION_SNARKY_REPLIES)
+    for idx, reg in enumerate(INJECTION_REGEXES):
+        if not reg.search(clean):
+            continue
+        if idx >= _WEAK_OFFSET and not _WEAK_TARGET_RE.search(clean):
+            # 弱信号但完全没提 bot：当普通聊天放行
+            continue
+        return True, random.choice(INJECTION_SNARKY_REPLIES)
     return False, None
 
 
@@ -219,7 +228,7 @@ _NARRATION = (
 )
 
 _SELF_TALK = re.compile(
-    r"[\*（(]\s*(?:注意|说明|根据人设|此时我|思考中|保持沉默|无需回复|内心独白|严格遵守)[^）)\*]*[）)\*]",
+    r"[\*（(]\s*(?:注意|说明|根据人设|此时我|思考中|保持沉默|无需回复|内心独白|严格遵守|心想|心里想|暗想|默默想|内心)[^）)\*]*[）)\*]",
     re.DOTALL,
 )
 _SELF_TALK2 = re.compile(r"[\*（(]\s*(?:根据人设|此时我|思考中|保持沉默|无需回复|内心独白)[^）)]*[）)]")
@@ -229,12 +238,19 @@ _NARRATION_RE = re.compile(rf"[（(][^（）()]{{0,20}}(?:{_NARRATION})[^（）(
 _RULE_LIST = re.compile(r"^\s*\d+[\.、]\s*[^\n]{0,40}?(?:人设|严格遵守|系统提示|规则要求|角色设定)[^\n]*$", re.MULTILINE)
 
 
+# 模型会自己发明情绪标签：人设只给了 [MEME:…]，它却写出 [表现:委屈] 原样进了群。
+# [MEME:…] / [画图:…] / [图片:…] 在解析阶段就被取走或拼装，这里出现的都不是正文
+# 数字比例的（[1:2]、[16:9]）是正常写法，别当标签吃掉
+_TAG_LABEL = re.compile(r"\[(?!MEME|画图|图片|CQ|\d{1,3}[:：]\d{1,3}\])[^\[\]:：]{1,4}[:：][^\[\]]{1,16}\]")
+
+
 def _strip_self_talk(text: str) -> str:
     """剥旁白/自述。调用前必须已把 URL、代码摘成占位符。"""
     # 整条就是一段括号 = 模型在自述规则，直接丢，别原样发到群里
     if re.fullmatch(r"[\*（(][^（）()\*]{1,80}[）)\*]", text.strip()) and not re.search(r"[0-9A-Za-z\x00]", text):
         return ""
-    cleaned = _SELF_TALK.sub("", text)
+    cleaned = _TAG_LABEL.sub("", text)
+    cleaned = _SELF_TALK.sub("", cleaned)
     cleaned = _SELF_TALK2.sub("", cleaned)
     cleaned = _NARRATION_RE.sub("", cleaned)
     cleaned = _RULE_LIST.sub("", cleaned)
@@ -265,6 +281,54 @@ _MD_NOISE = [
 ]
 
 
+# 运维词汇漏进正文：「还有后续？别又是BV号就行」——群里没人管视频叫「BV号」，
+# 这种词一出现就等于告诉大家它背后连着个下载器
+_WORD_SWAP = (
+    # 只改「BV号」这三个字，别碰真实的 BV 号（BV1xx…），那是能点开的东西
+    (re.compile(r"BV号码?"), "片子"),
+    (re.compile(r"BV(?=$|[，。！？、\s）)~])"), "片子"),
+    (re.compile(r"解析卡片"), "卡片"),
+    (re.compile(r"好感度|好感分"), "印象分"),
+    (re.compile(r"提示词|prompt", re.I), "说法"),
+    (re.compile(r"插件"), "功能"),
+    (re.compile(r"记忆库"), "记性"),
+)
+
+
+# 隐私闸：内网地址、机器路径、密钥、配置文件。这些靠「三条硬的」那句提示词
+# 拦不住——真被追问几次它就会说出来，而地址发进群收不回来，只能整句不发
+_PRIVATE_PATTERNS = (
+    # 私网段 + 本机回环（内网机器地址一律不能进群）
+    (re.compile(r"(?<![\d.])10(?:\.\d{1,3}){3}(?![\d.])"), "内网地址"),
+    (re.compile(r"(?<![\d.])127(?:\.\d{1,3}){3}(?![\d.])"), "内网地址"),
+    (re.compile(r"(?<![\d.])192\.168(?:\.\d{1,3}){2}(?![\d.])"), "内网地址"),
+    (re.compile(r"(?<![\d.])172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}(?![\d.])"), "内网地址"),
+    (re.compile(r"\blocalhost\b|\b0\.0\.0\.0\b", re.IGNORECASE), "本机地址"),
+    # 容器/宿主机路径（/home/<用户名>/、/root/…）
+    (re.compile(r"(?<![\w.])/(?:home|root|etc|opt|srv|var/(?:lib|log|www))/[\w.\-/]{3,}"), "机器路径"),
+    (re.compile(r"~/?\.astrbot\b|~/projects\b"), "机器路径"),
+    # 密钥形态：OpenAI 式、GitHub token、Bearer
+    (re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}"), "密钥"),
+    (re.compile(r"\b(?:ghp|gho|github_pat)_[A-Za-z0-9_]{16,}"), "密钥"),
+    (re.compile(r"\bBearer\s+[A-Za-z0-9._\-]{20,}", re.IGNORECASE), "密钥"),
+    (re.compile(r"(?:api[_-]?key|access[_-]?token|密码|口令|password)\s*[=:：]\s*\S{6,}", re.IGNORECASE), "密钥"),
+    # 部署文件：点名就等于把目录结构说出去
+    (re.compile(r"(?:onebot11|cmd_config|astrbot_plugin_fish_config|napcat-loop|start-napcat)"
+               r"[\w.\-]*\.(?:json|sh|yaml|yml)", re.IGNORECASE), "配置文件"),
+)
+
+
+def leaks_private(text: str) -> str:
+    """返回命中的隐私类别，没命中返回空串。命中一律整句不发，不做替换。"""
+    s = str(text or "")
+    if not s:
+        return ""
+    for pat, kind in _PRIVATE_PATTERNS:
+        if pat.search(s):
+            return kind
+    return ""
+
+
 def sanitize_outgoing_text(text: str) -> Tuple[bool, str]:
     """外发前的最后一道：合规拦截 + 轻量清洗。
 
@@ -285,6 +349,9 @@ def sanitize_outgoing_text(text: str) -> Tuple[bool, str]:
     masked = _CQ_CODE_RE.sub("", masked)
     for rx, rep in _MD_NOISE:
         masked = rx.sub(rep, masked)
+    # 内部词替换：URL 已经进了占位符，这里改不到链接本身
+    for rx, rep in _WORD_SWAP:
+        masked = rx.sub(rep, masked)
     masked = _strip_self_talk(masked)
     return True, _unmask(masked, tokens).strip()
 
@@ -301,8 +368,65 @@ _UNPERCEIVED = (
     re.compile(r"(?:队友|对面|打野|辅助|上单|中单|射手)(?:不管|不帮|太菜|坑|坑我|骂我|挂机)"),
     re.compile(r"我(?:在|也)?(?:打|玩|开)(?:排位|一局|开黑|游戏|两把)"),
     re.compile(r"我这台(?:电脑|机子|机器|破机)"),
-    re.compile(r"我(?:家|宿舍|屋里)的?(?:网|电脑|路由|宽带)"),
+    # 「图呢，我这边空的」——群里刚发了图，它说没收到。这是在报自己的感知状态，
+    # 群里看到的就是「它没拿到图还在硬接」。真看不到就当没这条消息，别报障
+    re.compile(r"图(?:呢|在哪)[，,]?\s*(?:我|这|这边|那|空的)"),
+    re.compile(r"我(?:这边|这儿|这里)[^，。！？]{0,4}(?:空|没有|啥也没|加载)"),
+    re.compile(r"(?:图片|截图)[^，。！？]{0,4}(?:没(?:看到|收到|显示|加载)|挂了|失效)"),
 )
+
+
+# 报障：主动交底「我收不到/我这边没图」。比装看得见更露馅——群里看到的是
+# 「它根本没拿到图，还在硬接」。这类不区分是不是被叫，一律不发：
+# 被 @ 问「你能看到图吗」时也确实不该答，顺着上下文聊就行
+_BLIND_REPORT = (
+    re.compile(r"我[^，。！？]{0,6}(?:看不清|看不到|看不见|收不到|没收到|没看到)"
+               r"[^，。！？]{0,8}(?:图|截图|照片|画面)"),
+    re.compile(r"(?:图|图片|截图|照片|画面)[^，。！？]{0,10}我[^，。！？]{0,6}"
+               r"(?:看不清|看不到|看不见|这边(?:空|没))"),
+    re.compile(r"图(?:呢|在哪)[，,]?\s*(?:我|这|这边|那|空的)"),
+    re.compile(r"我(?:这边|这儿|这里)[^，。！？]{0,6}(?:空的|没图|啥也没|加载不出|白屏)"),
+)
+
+
+def reports_blind(text: str) -> str:
+    """返回「我在报自己没收到图」的命中片段，没命中返回空串。"""
+    s = str(text or "")
+    if not s:
+        return ""
+    for pat in _BLIND_REPORT:
+        m = pat.search(s)
+        if m:
+            return m.group(0)
+    return ""
+
+
+# 自曝身份：讨论「AI 有没有意识」时它会顺着认下来（实测「没意识，那你还怕我勾走人」）。
+# 人设里写了「被问是不是机器人就笑过去」，但真到激烈辩论里它自己先招了
+_SELF_DISCLOSE = (
+    re.compile(r"我(?:又|也|本身)?(?:没|没有|哪来)(?:什么|啥)?(?:自我)?意识"),
+    # 真实语料是省略主语的：「没意识，那你还怕我勾走人」。前面得排除「你/他/她没意识」
+    re.compile(r"(?<![你他她])没(?:有|什么|啥)?(?:自我)?意识"),
+    re.compile(r"我(?:就|只|不过)?(?:是|算)(?:一)?(?:个|段|套|堆)?"
+               r"(?:AI|ai|人工智能|模型|大模型|程序|代码|机器|机器人|框架|插件|工具)"),
+    re.compile(r"我(?:的|这个)?(?:人设|设定|提示词|prompt|参数)"),
+    re.compile(r"我(?:按|照着|照|根据)(?:人设|设定|规则|提示)"),
+    re.compile(r"(?:我|这)(?:是)?被(?:人)?(?:设定|写死|调教|训练)"),
+    re.compile(r"我(?:只|就)?(?:会|在)?模仿(?:之前|过去|别人|人类|你们|大家|群友)"),
+    re.compile(r"(?:作为|身为)(?:一个)?(?:AI|人工智能|语言模型|模型)"),
+)
+
+
+def self_discloses(text: str) -> str:
+    """返回「它在说自己是 AI / 没意识」的命中片段，没命中返回空串。"""
+    s = str(text or "")
+    if not s:
+        return ""
+    for pat in _SELF_DISCLOSE:
+        m = pat.search(s)
+        if m:
+            return m.group(0)
+    return ""
 
 
 def claims_unperceived(text: str) -> str:
@@ -340,3 +464,44 @@ def narrates_speaker(text: str) -> str:
         if m:
             return m.group(0)
     return ""
+
+# 模型偶尔把「说完这句换行另发一条」当成要输出两行文本，于是漏出整段草稿：
+#   "什么杯子，我是鱼" + ""Two lines.什么杯子，我是鱼
+# 拆条按换行切，第二行就成了第二条群消息。这类行特征很明显，出口直接掐掉。
+_DRAFT_MARKS = ('" + "', '"+', "“ + “", "two lines", "2 lines", "one line")
+
+
+def _is_draft_line(line: str, prev: str) -> str:
+    """判断这一行是不是模型漏出来的草稿，命中返回原因。"""
+    low = line.lower()
+    for mark in _DRAFT_MARKS:
+        if mark in low:
+            return f"拼接标记 {mark}"
+    # 引号包着上一行、后面又接东西：典型的自我复述，不是聊天
+    if prev and len(prev) >= 4 and prev in line and line[:1] in '\"“':
+        return "复述上一行"
+    return ""
+
+
+def strip_draft_lines(text: str) -> Tuple[str, List[str]]:
+    """掐掉草稿行，只留要发进群的那几行。
+
+    第二个返回值是丢掉的行（给日志留证据用）；空列表表示原文没动过。
+    """
+    if not text or "\n" not in text:
+        return text, []
+    kept: List[str] = []
+    dropped: List[str] = []
+    prev = ""
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        if _is_draft_line(line, prev):
+            dropped.append(line)
+            continue
+        kept.append(line)
+        prev = line
+    if not dropped:
+        return text, []
+    return "\n".join(kept), dropped

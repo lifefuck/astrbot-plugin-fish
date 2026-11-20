@@ -93,9 +93,12 @@ def handle_quick_game_commands(text: str) -> Optional[str]:
     m_roll = re.match(r"^(?:/)?(?:roll|摇骰子|掷骰子|丢骰子)(?:\s+(\d+))?$", t, re.IGNORECASE)
     if m_roll:
         _digits = m_roll.group(1) or ""
+        # 超过七位不静默改成 100：用户喊「roll 12345678」，回一句「1~100」等于答非所问
+        if len(_digits) > 7:
+            return "数字太大啦，最多七位（最大 1000000）"
         # Python 3.11 起 int() 超过 4300 位直接抛 ValueError（含超长数字串的闲聊会让
-        # 整条消息处理中断），先按长度兜住再转
-        max_val = int(_digits) if 0 < len(_digits) <= 7 else 100
+        # 整条消息处理中断），长度已经先拦住了
+        max_val = int(_digits) if _digits else 100
         if max_val < 1:
             max_val = 6
         elif max_val > 1000000:

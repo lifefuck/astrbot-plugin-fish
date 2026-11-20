@@ -381,7 +381,11 @@ class PanelApi:
             for uid, rec in persons.items():
                 if not isinstance(rec, dict):
                     continue
-                score = float(rec.get("s", 50))
+                # 状态文件是手改得动的，一个 "s": "未知" 就能让整个 /api/favor 500
+                try:
+                    score = float(rec.get("s", 50))
+                except (TypeError, ValueError):
+                    score = 50.0
                 rows.append({
                     "group_id": g, "person_id": uid, "score": round(score, 1),
                     "tier": "亲近" if score >= 80 else "熟人" if score >= 60 else "中立" if score >= 40 else "嫌弃",

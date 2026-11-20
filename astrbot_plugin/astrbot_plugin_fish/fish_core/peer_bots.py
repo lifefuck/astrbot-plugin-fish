@@ -13,7 +13,9 @@ from __future__ import annotations
 import json
 import os
 
-NAME_HINTS = ("机器人", "bot", "助手", "管家", "小助手", "bot酱")
+# 「助手」「管家」这类词真人昵称里太常见（「小助手妈妈」「家庭管家老王」），
+# 只靠昵称判会把真人当机器人、整条消息丢掉。要认的必须是明确的机器标识
+NAME_HINTS = ("机器人", "bot", "bot酱", "chatgpt", "assistant", "gpt-", "claude")
 
 
 def load(path: str, logger=None) -> set[str]:

@@ -578,7 +578,8 @@ async def describe(images_b64: list[str], cfg: dict, logger=None) -> str:
         if logger:
             logger.warning("[fish] 视觉放弃：%d 张图全部解码失败", failed or len(images_b64))
         return ""
-    return await _describe_raw(raws, cfg, logger=logger)
+    # 过一遍清洗：模型偶尔把「根据人设」这类提示词复述当成描述返回
+    return _clean_desc(await _describe_raw(raws, cfg, logger=logger))
 
 
 async def from_components(components: list, cfg: dict, logger=None) -> str:

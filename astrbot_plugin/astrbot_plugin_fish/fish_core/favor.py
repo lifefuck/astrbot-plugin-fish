@@ -36,11 +36,13 @@ DECAY_PERIOD = 7 * 86400
 
 # 打分规则。顺序有意义：前面的先匹配到就停，避免「谢谢傻逼」两边都加
 RULES = (
+    # 骂人的规则必须排在最前面。原来「顺毛」在前，实测「谢谢傻逼」先命中 +2，
+    # 骂人的那条永远轮不到，越骂好感越高
+    (re.compile(r"(傻逼|傻b|脑瘫|弱智|废物|死全家|去死|滚蛋|闭嘴)"), -8.0, "辱骂"),
+    (re.compile(r"(你不行|太菜|人机|笨死|蠢死|真菜|就这)"), -2.0, "挑刺"),
     (re.compile(r"(投喂|请你吃|请你喝|给你买|给你点|塞你嘴里)"), 5.0, "投喂"),
     (re.compile(r"(谢谢|多谢|辛苦了|厉害|太强|好听|可爱|喜欢你)"), 2.0, "顺毛"),
     (re.compile(r"(对不起|抱歉|我错|别生气|原谅我)"), 2.0, "认错"),
-    (re.compile(r"(傻逼|傻b|脑瘫|弱智|废物|死全家|去死|滚蛋|闭嘴)"), -8.0, "辱骂"),
-    (re.compile(r"(你不行|太菜|人机|笨死|蠢死|真菜|就这)"), -2.0, "挑刺"),
 )
 
 TIERS = ((80.0, "亲近"), (60.0, "熟人"), (40.0, "中立"), (0.0, "嫌弃"))
@@ -143,7 +145,35 @@ def _decay(rec: dict, now: float):
     rec["d"] = last + DECAY_PERIOD * max(1, periods)
 
 
+LOCKED: dict = {}          # person_id -> 固定分；主人在所有群锁满分
+
+
+def set_locked(person_id, value: float) -> None:
+    """把某个人在所有群的分数钉死。主人的分不该被他骂鱼/骂模型刷下去。
+
+    同时写进内存状态：/memory 这类指令直接读 json 文件，只锁内存它看不见，
+    群里就会出现「说是锁了 100，指令里还写着 50」。
+    """
+    global _dirty
+    if not person_id:
+        return
+    pid = str(person_id)
+    LOCKED[pid] = float(value)
+    for g in list(_state.values()):
+        if not isinstance(g, dict):
+            continue
+        rec = g.get(pid)
+        if not isinstance(rec, dict):
+            rec = {"s": float(value), "t": 0.0, "d": time.time(), "n": ""}
+            g[pid] = rec
+        rec["s"] = float(value)
+    _dirty = True
+
+
 def score(group_id, person_id, now: float | None = None) -> float:
+    locked = LOCKED.get(str(person_id))
+    if locked is not None:
+        return locked
     now = now if now is not None else time.time()
     rec = _person(group_id, person_id)
     _decay(rec, now)

@@ -715,20 +715,12 @@ async def _parse_qq_music(session: aiohttp.ClientSession, url: str) -> Optional[
 def _salvage_share_text(text: str, kind: str) -> Tuple[str, str]:
     """从群友贴的分享口令里捞标题/作者。
 
-    QQ 里分享抖音、小红书基本都是「复制口令 + 短链」的纯文本，
+    QQ 里分享小红书基本都是「复制口令 + 短链」的纯文本，
     平台那套 JS 墙我们进不去，但这几段文字本身就把标题写着了，白捡的信息别浪费。
     返回 (标题, 作者)，捞不到就是两个空串。
     """
     title = author = ""
-    if kind == "douyin":
-        m_auth = re.search(r"【(.+?)的作品】", text)
-        if m_auth:
-            author = m_auth.group(1).strip()
-        # 作者名后面到链接之间那一段通常就是作品文案
-        m_title = re.search(r"】([^【】]{2,60}?)\s*https?://", text)
-        if m_title:
-            title = m_title.group(1).strip()
-    elif kind == "xiaohongshu":
+    if kind == "xiaohongshu":
         m_title = re.search(r"\d+\s*([^\s].{1,60}?)\s*发布了一篇小红书笔记", text)
         if m_title:
             title = m_title.group(1).strip()
@@ -765,7 +757,7 @@ async def _parse_short_video(
     if not title and not desc:
         logger.info("%s 页面没有可读元信息，改用分享口令兜底: %s", kind, final_url[:80])
         return _share_text_card(kind, share_text)
-    label = {"douyin": "抖音作品", "xiaohongshu": "小红书笔记", "kuaishou": "快手作品"}[kind]
+    label = {"xiaohongshu": "小红书笔记", "kuaishou": "快手作品"}[kind]
     body = _clip_desc(desc) if desc else ""
     text = f"[{label}] {title or '（无标题）'}"
     if body and body != title:
@@ -778,7 +770,7 @@ def _share_text_card(kind: str, share_text: str) -> Optional[Dict[str, Any]]:
     title, author = _salvage_share_text(share_text, kind)
     if not title and not author:
         return None
-    label = {"douyin": "抖音作品", "xiaohongshu": "小红书笔记", "kuaishou": "快手作品"}[kind]
+    label = {"xiaohongshu": "小红书笔记", "kuaishou": "快手作品"}[kind]
     head = f"[{label}] {title or '（分享口令里没有标题）'}"
     if author:
         head += f" - {author}"
@@ -885,11 +877,6 @@ async def parse_media_content(session: aiohttp.ClientSession, text: str) -> Opti
             return card
 
     # 4. 短视频/图文：抖音、小红书、快手（抓不到内容就静默）
-    m_dy = re.search(r"https?://(?:v\.douyin\.com/[A-Za-z0-9_-]+|(?:www\.)?(?:ies)?douyin\.com/(?:video|note|share/video)/\d+)", text)
-    if m_dy:
-        card = await _parse_short_video(session, m_dy.group(0).rstrip("/") + "/", "douyin", text)
-        if card:
-            return card
     m_xhs = re.search(
         r"https?://(?:xhslink\.com/[A-Za-z0-9/_?=&.-]+|(?:www\.)?xiaohongshu\.com/(?:explore|discovery/item)/[A-Za-z0-9]+[^\s'\"]*)",
         text,
@@ -910,3 +897,44 @@ async def parse_media_content(session: aiohttp.ClientSession, text: str) -> Opti
         return await _parse_webpage(session, url)
 
     return None
+
+
+# ---------------------------------------------------------------- 媒体链接识别
+
+# 贴这类链接等于「帮我把这个打开」，该走纯功能路径，不该参与「接不接话」的判定
+_MEDIA_KIND_RE = (
+    ("bilibili", re.compile(
+        # 只认能解析出内容的页面。之前 bilibili\.com/\S+ 把专栏/空间也算进来，
+        # 卡片解析不出、视频也下不了，但入口已经 stop_event，群里一个字都没有
+        r"(?:https?://(?:b23\.tv/[0-9A-Za-z]+|bili2233\.cn/[0-9A-Za-z]+"
+        r"|(?:www\.|m\.)?bilibili\.com/(?:video/(?:BV[0-9A-Za-z]{10}|av\d+)"
+        r"|bangumi/play/(?:ep|ss)\d+|live/\d+))"
+        # 链接后面直接跟中文是 QQ 常态（「BV1xx好看」），URL 字符只吃可见 ASCII
+        r"|(?<![0-9A-Za-z])(?:BV[0-9A-Za-z]{10}|av\d{5,})(?![0-9A-Za-z]))", re.I)),
+    ("xiaohongshu", re.compile(
+        r"https?://(?:xhslink\.com/[A-Za-z0-9/_?=&.-]+"
+        r"|(?:www\.)?xiaohongshu\.com/(?:explore|discovery/item)/[A-Za-z0-9]+[A-Za-z0-9/_?=&.-]*)", re.I)),
+    ("kuaishou", re.compile(
+        r"https?://(?:v\.kuaishou\.com/[A-Za-z0-9_-]+"
+        r"|(?:www\.)?kuaishou\.com/short-video/[A-Za-z0-9]+)", re.I)),
+    ("youtube", re.compile(
+        r"https?://(?:youtu\.be/[!-~]+|(?:www\.)?youtube\.com/(?:watch\?v=|shorts/)[!-~]+)", re.I)),
+)
+
+
+def find_media_url(text: str) -> Tuple[str, str]:
+    """这条消息是不是在甩视频/图文链接？返回 (平台, 链接)，不是就两个空串
+
+    跟 parse_media_content 分开：那个负责「抓内容」，这个负责「判断该不该进解析。」
+    光看有没有 http 会把普通网页也算进来，只有认得出平台才当功能请求处理。
+    """
+    t = text or ""
+    for kind, rx in _MEDIA_KIND_RE:
+        m = rx.search(t)
+        if m:
+            url = m.group(0).rstrip("，。！？、,.;:!?")
+            # 群里甩过来的常常是光秃秃的 BV 号，下载器只认完整地址
+            if kind == "bilibili" and not url.lower().startswith(("http", "b23", "bili2233")):
+                url = "https://www.bilibili.com/video/" + url
+            return kind, url
+    return "", ""

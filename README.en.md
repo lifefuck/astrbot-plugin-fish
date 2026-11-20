@@ -28,6 +28,8 @@ The original hand-rolled framework (`bot.py`, its own event loop and dashboard) 
 - **Memes**: picked by emotion tag, at most one per turn; blocked if it just sent one or if the other person just posted an image.
 - **Meme duels**: @ it with an image and it picks one from its own stock to fire back — a line of trash talk first, then the picture.
 - **Vision**: an image in the group gets downscaled, described by Gemini, and the description goes into the prompt; failures degrade silently.
+- **Recognise first, decide later**: an image is described in the background the moment it arrives, not only when the line happens to be worth answering. The description is written back into the timeline, so the next few turns actually have the picture instead of an `[image]` placeholder. Each image is described once — the reply decision and the timeline share one call.
+- **Bilibili video passthrough**: paste a link and say "send it to me" and it downloads and sends the file itself. AV1 by default (about a sixth the size of H.264); if someone reports a black screen it re-sends as H.264. Works when NapCat lives on another machine — the plugin serves the file over a temporary local HTTP endpoint, and the relay address is auto-detected when left empty.
 - **Link parsing**: Bilibili, GitHub, NetEase Cloud Music, Douyin, Xiaohongshu, Kuaishou, and plain web pages get their title and summary pulled in, so it doesn't have to guess what a link is.
 - **Web access**: only when it's addressed *and* the question is concrete ("where's this image from", "look this up", "any new anime"). Ordinary chat makes zero outbound calls.
 - **Hot memes and group slang**: three layers of injection — always-on memes, memes relevant to this line, and words this specific group uses daily (mined from real chat, see "Where the memes come from").
@@ -41,6 +43,18 @@ The original hand-rolled framework (`bot.py`, its own event loop and dashboard) 
 - **Moderation reports**: in whitelisted groups, ads/recruiting, image spam, and serious abuse get a line in the group plus a DM to the owner (the judgement lives in the prompt; code only strips markers and forwards).
 - **Pokes**: pokes back, then picks up the message that was left unanswered before the poke.
 - **Guardrails**: explicit attempts to rewrite the persona, extract the system prompt, or override instructions get a flat refusal without a model call; normal questions always pass.
+
+## The output gate
+
+Every line the model produces passes through code (`fish_core/safety_guard.py`) before it reaches the group. This layer does not depend on the model behaving, it always runs:
+
+- strips tags the model invents (`[mood:sad]`, `(sighs)`), allowing only `[MEME:…]`, `[draw:…]`, `[image:…]` and CQ codes, and leaves numeric ratios like `[16:9]` alone;
+- swaps internal vocabulary for plain speech: BV id → clip, plugin → feature, favour score → impression, prompt → wording; real BV ids are untouched;
+- drops any line that fakes having seen something ("I can't see the image on my end", "where's the picture") — pretending beats admitting far worse;
+- drops any line that admits being an AI, bot or program, or that mentions the persona, the settings, the prompt;
+- drops any line containing a private address, a host path, a key, or a deployment filename — no substitution, since a redacted address still leaves half the sentence.
+
+None of this lives in the persona. Anything that must hold 100% of the time belongs in code; the prompt only sets the tone. Past a few hundred characters the rules start fighting each other, the model picks whichever is easiest to satisfy, and out comes support-desk voice and repetition. The persona is capped at 600 characters and the assembled system prompt stays under 900; before adding anything, ask: can this be code? does it apply every time? can it be an example instead?
 
 ## Install
 
@@ -96,7 +110,8 @@ A few that are easy to miss:
 | `hearing_model` / `hearing_timeout_sec` | Which model transcribes, and the per-clip timeout |
 | `meme_gen_enabled` / `meme_gen_timeout_sec` | Draw text memes on its own, and the per-image timeout |
 | `tattle_watch_groups` | Groups where it reports proactively. **Empty = reports nowhere** |
-| `order_guard_enabled` / `order_guard_cooldown_sec` | Moderation patrol master switch and per-group report cooldown |
+| `order_guard_enabled` / `order_guard_cooldown_sec` | Moderation watch master switch and per-group report cooldown |
+| `video_http_host` | Relay address used to hand Bilibili videos to NapCat; **empty = auto-detect the local LAN address** |
 
 Memes are an optional dependency: drop a pack at `astrbot_plugin_fish/fish_core/meme-pack/` and the index loads automatically; without it the bot sends text only. The repo ships no assets.
 
