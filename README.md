@@ -97,6 +97,8 @@ AstrBot 面板 → 插件 → 小鲸鱼·群聊拟真。必须动的几个：
 
 模型（provider）、唤醒前缀 `/` 属于 AstrBot 全局设置，不在插件里配。
 
+全部 90 项的默认值、说明和调法见 [docs/config.md](docs/config.md)——它由 `_conf_schema.json` 生成，CI 会检查有没有过期。实现细节、目录结构和踩过的坑在 [插件自己的 README](astrbot_plugin/astrbot_plugin_fish/README.md)。
+
 还有几个容易漏的：
 
 | 配置 | 说明 |

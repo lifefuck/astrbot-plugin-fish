@@ -97,6 +97,8 @@ AstrBot dashboard → Plugins → 小鲸鱼·群聊拟真. The ones you must tou
 
 Provider and the `/` wake prefix are AstrBot-wide settings, not plugin config.
 
+All 90 options, their defaults and how to tune them live in [docs/config.md](docs/config.md), generated from `_conf_schema.json` with a CI check for drift. Implementation notes, layout and the pitfalls we hit are in the [plugin README](astrbot_plugin/astrbot_plugin_fish/README.md).
+
 A few that are easy to miss:
 
 | Key | Meaning |
