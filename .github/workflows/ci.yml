@@ -30,3 +30,9 @@ jobs:
 
       - name: 隐私扫描
         run: python scripts/privacy_scan.py --all
+
+      - name: 配置文档与 schema 一致
+        run: python scripts/gen_config_doc.py --check
+
+      - name: 自检（纯函数，不联网）
+        run: python astrbot_plugin/astrbot_plugin_fish/scripts/selfcheck.py
