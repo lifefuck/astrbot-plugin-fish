@@ -20,6 +20,10 @@ logger = logging.getLogger("astrbot")
 
 # 「该不该禁言」「踢不踢」这种讨论句不是命令
 _ASK_WORDS = re.compile(r"[?？]|吗|呢|吧|该不该|要不要|是不是|能不能|可不可以|如果|假如|要不|是否|该禁|该踢")
+# 「不要禁言他」「别踢老王」是反话。只排疑问词挡不住，实测会把人真禁掉
+_NEG_WORDS = re.compile(r"(别|不要|不用|甭|禁止|不许|不准|先别|不能|没必要)")
+# 「把小明的禁言解了」方向相反，绝不能当成再禁一次
+_UNBAN_WORDS = re.compile(r"(解禁|解除|取消禁言|撤销|解开|放出来|别禁了|不用禁了|可以说话了)")
 # 数字兜底会把「我踢了80000步」的步数当 QQ 号
 _NUM_UNIT = re.compile(r"\d{5,12}\s*(?:步|元|块|个|人|分|秒|天|年|岁|次|条|页|米|度|斤|万|千|层|抽|连)")
 _RE_AT = re.compile(r"\[CQ:at,qq=(\d+)\]")
@@ -29,7 +33,13 @@ _ADMIN_TTL = 60.0
 
 
 def is_imperative(body: str) -> bool:
-    return not _ASK_WORDS.search(body or "")
+    b = body or ""
+    if _ASK_WORDS.search(b):
+        return False
+    # 反话最难防：一句话里只要有否定词就不动手，宁可漏一次也别误禁人
+    if _NEG_WORDS.search(b):
+        return False
+    return True
 
 
 def parse_duration(text: str) -> tuple[int, str]:
@@ -181,6 +191,9 @@ async def maybe_run(event, bot, gid: str, sender_id: str, self_id: str,
     at_ids += [m for m in _RE_AT.findall(str(getattr(event.message_obj, "raw_message", "") or ""))
                if m != self_id]
 
+    if _UNBAN_WORDS.search(body):
+        # 解禁要走管理面板/人工，不能顺手套到"再禁一次"上
+        return None
     wants_ban = "禁言" in body or "闭嘴" in body
     wants_kick = bool(re.search(r"(踢|踹)", body))
     if not (wants_ban or wants_kick):

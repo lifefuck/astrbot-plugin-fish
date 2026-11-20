@@ -26,7 +26,16 @@ SYSTEM = (
     "join=true 的情形：有人开口骂你、阴阳你（这类要顶回去，不是装没看见，但也别写长）、"
     "有人提问没人答、在讨论一个具体的东西、在吐槽/玩梗且有空位、"
     "点名或明确在对你说话。\n"
-    "how 只能落在这三种角度：问一句细节、就着对方说的表个态、把话递回去让对方讲。\n"
+    "记录里你自己说过的话也在其中。别人接着你的话往下说——哪怕只有「懂事」「行」「哦」"
+    "这么两个字，哪怕没点你的名——那就是在跟你说话，join 必须为 true。"
+    "把接着你说的话当成别人的私聊而不接，是这类群里最招人烦的行为。\n"
+    "有人喊「给我搞死他」「给我配死这个发图的」「弄他」这种，是在起哄、解气、开玩笑，"
+    "不是在给你派活。这时候 how 别用「问一句细节」那个角度，要直接站他那边损那个人一句。"
+    "写成「问他想怎么配」这种，等于没听懂人话。\n"
+    "有人回你上一句时还带了个表情、一个问号、一句「？」这种近乎空的内容，"
+    "只要它是对你那句的回应，也算在跟你说话。\n"
+    "how 只能落在这三种角度：问一句细节、就着对方说的表个态、把话递回去让对方讲。"
+    "起哄骂人的场景走「表个态」——顺着骂或者笑他，不要反问。\n"
     "how 开头必须点明你在接谁：写成「接A的：角度」或「对B：角度」，"
     "看不出该接谁就 join=false——把两个人之间的话算成自己参与，是这类群里最假的行为。\n"
     "how 是「角度」，不是台词：最多 15 字，短语形态（如「吐槽他这操作」「问他值不值」），"
@@ -40,12 +49,16 @@ SYSTEM = (
 
 
 def build_prompt(timeline: list[str], latest: str, nick: str, bot_nick: str = "小鲸鱼",
-                 is_at: bool = False) -> str:
+                 is_at: bool = False, is_follow: bool = False) -> str:
     lines = timeline[-8:] if timeline else ["（群里暂时没别人说话）"]
     head = f"你是「{bot_nick}」，群里一个爱插话的普通群友。\n最近记录（从旧到新）："
     tail = f"\n刚发生的这句：{nick}：{latest or '（只发了图/只@了人）'}"
     if is_at:
         tail += "\n（这句@了你，是你被直接叫到。除非完全没有内容，否则 join 必须为 true）"
+    elif is_follow:
+        # 追问窗口：他在你上一句之后接着说的。判官以前看不到这个信号，
+        # 只当「两个群友在私聊」→ 判不接，用户当场就发现「我说明事它怎么不吭声」
+        tail += "\n（这句接在你刚说的话后面，是在跟你说，不是你插进别人的私聊。join 必须为 true）"
     return head + "\n" + "\n".join(lines) + tail
 
 
@@ -77,9 +90,10 @@ def parse(text: str) -> dict:
     }
 
 
-async def decide(llm_call, *, timeline, latest, nick, bot_nick="小鲸鱼", is_at=False) -> dict:
+async def decide(llm_call, *, timeline, latest, nick, bot_nick="小鲸鱼", is_at=False,
+                 is_follow=False) -> dict:
     """llm_call(prompt, system) -> str，由调用方注入（AstrBot 的 provider 或测试桩）。"""
-    prompt = build_prompt(timeline, latest, nick, bot_nick, is_at)
+    prompt = build_prompt(timeline, latest, nick, bot_nick, is_at, is_follow)
     text = await llm_call(prompt, SYSTEM)
     verdict = parse(text)
     verdict["prompt"] = prompt

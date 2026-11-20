@@ -20,15 +20,24 @@ _CLOSE = "）)】]」』》”’"
 
 
 def _guarded(text: str, delimiters: str) -> list[str]:
-    """按 delimiters 切，但括号/引号没闭合的地方一律不切。"""
+    """按 delimiters 切，但括号/引号没闭合的地方一律不切。
+
+    链接里的 `?` 是查询串不是句末：实测「看这个 https://…/BV1xx?p=2 挺好看的」
+    被从这个问号切开，第一条成了点不开的死链。
+    """
     out, buf, depth = [], "", 0
-    for ch in text:
+    in_url = False
+    for i, ch in enumerate(text):
         buf += ch
+        if not in_url and text.startswith("http", i) and (i == 0 or not text[i - 1].isalnum()):
+            in_url = True
+        if in_url and ch.isspace():
+            in_url = False
         if ch in _OPEN:
             depth += 1
         elif ch in _CLOSE:
             depth = max(0, depth - 1)
-        if depth == 0 and ch in delimiters:
+        if depth == 0 and ch in delimiters and not in_url:
             out.append(buf)
             buf = ""
     if buf.strip():

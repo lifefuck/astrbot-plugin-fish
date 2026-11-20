@@ -580,5 +580,29 @@
     "description": "上面那个条数的统计窗口（秒）",
     "type": "int",
     "default": 180
+  },
+  "video_download_enabled": {
+    "description": "视频解析：贴 B 站链接直接发视频",
+    "type": "bool",
+    "default": true,
+    "hint": "关掉后只发图文卡片，不下载视频文件。"
+  },
+  "video_http_host": {
+    "description": "视频中转地址（本机内网 IP）",
+    "type": "string",
+    "default": "",
+    "hint": "NapCat 跑在别的机器上，读不到本机文件路径，下载好的片子得经本机临时 HTTP 喂给它。留空自动探测本机内网 IP。"
+  },
+  "video_max_mb": {
+    "description": "单条视频体积上限（MB）",
+    "type": "int",
+    "default": 80,
+    "hint": "超过就先降画质，降到 360p 还超就只发卡片。"
+  },
+  "video_max_minutes": {
+    "description": "单条视频时长上限（分钟）",
+    "type": "int",
+    "default": 30,
+    "hint": "超过就直接只发卡片，别让两小时直播回放把磁盘和群都撑爆。"
   }
 }

@@ -25,6 +25,7 @@ import json
 import os
 import random
 import re
+import socket
 import sys
 import time
 from collections import deque
@@ -44,8 +45,35 @@ try:  # 空工具集 = 这次请求不给模型任何工具
 except Exception:  # 版本差异时降级：至少不会因此起不来
     NO_TOOLS = None
 
+def _guess_lan_ip() -> str:
+    """视频中转地址没配时，自己报本机对外网卡的 IP。
+
+    UDP connect 只是让内核按路由表选一张网卡，不真发包；拿不到就退回环，
+    同机部署（NapCat 与 AstrBot 在一台）本来就连得上。硬编码内网 IP 会在
+    换网段后静默发不出视频，而且地址本身也不该写进配置文件。
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("223.5.5.5", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
 # 只在消息里真有链接/视频号时才去解析；不用 findall，命不中就算了
 _URL_RE = re.compile(r"https?://|www\.|b23\.tv|bili2233\.cn|\bBV[a-zA-Z0-9]{10}\b|\bav\d{3,}")
+# 「AV1 播不了」的反馈词。默认发小体积 AV1，群里有人这么喊就换 H.264 重发
+_PLAYBACK_RE = re.compile(
+    r"(播不了|放不了|看不了|黑屏|没画面|花屏|没声音|没有声音|换个格式|换.{0,2}编码|h264|h\.264)",
+    re.I)
+# 光出现「没声音」不行：群里聊耳机、说游戏音效都会被当成「视频播不了」，
+# 然后这句话本身还被 stop 掉、群里凭空多一份 13MB 视频。必须同句有指代才认
+_PLAYBACK_POINT_RE = re.compile(r"(视频|片子|这个|那个|刚才|刚刚|上面|这条|你发|前面|视频里)", re.I)
+# 贴了链接还要人评价：这时候才把大模型叫起来。光贴链接只解析，不聊天
+_ASK_OPINION_RE = re.compile(
+    r"(评价|点评|说说|讲讲|分析|怎么看|怎么评价|你觉得|你的看法|什么看法|如何评价|讲讲看|说说看|聊聊)", re.I)
 
 # 触发联网的实时性关键词。只在「被叫到」时才看，一次检索 0.3 秒，成本可接受
 _REALTIME_RE = re.compile(
@@ -147,6 +175,7 @@ backup = _load("backup", "backup.py")
 games = _load("games", "games.py")
 fun_features = _load("fun_features", "fun_features.py")
 media_resolver = _load("media_resolver", "media_resolver.py")
+bili_video = _load("bili_video", "bili_video.py")
 connectors = _load("connectors", "connectors.py")
 safety_guard = _load("safety_guard", "safety_guard.py")
 cross_interaction = _load("cross_interaction", "cross_interaction.py")
@@ -269,7 +298,9 @@ _POKE_BACK_TS: dict[str, float] = {}
 # 被同一个人一分钟内戳第二下时的固定短句池。2~4 字，避开上一次说过的：
 # 这里不走模型——连戳时模型每次都写长句，拆条之后就是刷屏，
 # 而这种情况本来也不需要"懂上下文"，只需要一句没耐心的打发
-_POKE_SNARK = ("手欠", "别戳", "再戳收费", "干嘛啊", "戳啥", "轻点", "欠揍")
+# 池子要够大：写七个词时实测一天里「手欠」出现四次，因为每次都从第一个挑
+_POKE_SNARK = ("手欠", "别戳", "再戳收费", "干嘛啊", "戳啥", "轻点", "欠揍",
+               "又来", "手别乱动", "摸头要钱的", "找打", "啧", "戳上瘾了")
 
 _BUILTIN_COMMANDS = frozenset({
     "help", "reset", "new", "stop", "sid", "stats",
@@ -296,8 +327,21 @@ _SONG_STOP_WORDS = {
 }
 
 
+# 讨论「点歌」这个功能时，意图词后面跟着的是语法成分：点歌的话/点歌这件事/
+# 点歌功能…。这些开头的都不是歌名
+_SONG_META_HEAD = ("的", "归", "属", "由", "是", "要得", "得", "应该", "一般", "通常",
+                   "不是", "都", "还", "也", "这个", "那个", "功能", "时候", "之后", "之前")
+_SONG_META_CONTAINS = ("的话", "走的是", "指的是", "说的是", "就是", "算是", "等于",
+                       "这件事", "这个问题", "这个功能", "插件")
+
+
 def _parse_song_request(text: str) -> str:
     """从一句闲聊里抠出歌名，抠不到就返回空串（宁可不接，也别乱放歌）。"""
+    # 一段话里带「点歌」两个字不等于在点歌：贴人设时那句「点歌归另一插件，
+    # 音源只有 B 站」被当成点《归另一插件》，还命中缓存真发了语音。
+    # 点歌从来都是短句，超长的一律不认
+    if len((text or "").strip()) > 35:
+        return ""
     # 带书名号/引号的时候最靠谱，直接拿引号里的东西，别让正则把「洛天依的」当歌名。
     # 但光有引号不算点歌——「《三体》好看吗」「他说"今天下雨了"」都是正常引用，
     # 之前只要带引号就去搜歌下载发语音，正常聊天都能点出一首歌
@@ -310,8 +354,12 @@ def _parse_song_request(text: str) -> str:
         name = quote_m.group(1).strip()
         rest = (text or "").replace(quote_m.group(0), "").strip()
         has_intent = bool(_SONG_INTENT_RE.search(text or ""))
+        # 「他说"今天下雨了"」「她回"好的呀"」是转述，不是点歌：
+        # 引号前面挂着说话动词就别放歌，否则正常聊天都能点出一首
+        quoted_by_speech = bool(re.search(r"(说|讲|问|答|写|提到|回复|喊|念|叫)", rest))
         # 整条消息几乎只剩歌名（「晴天」「好家伙《晴天》」）也算点歌
-        if name and name not in _SONG_STOP_WORDS and (has_intent or len(rest) <= 2):
+        if (name and name not in _SONG_STOP_WORDS and not quoted_by_speech
+                and (has_intent or len(rest) <= 2)):
             return name
     for m in _SONG_INTENT_RE.finditer(text or ""):
         raw = m.group(1).strip().strip("　 ")
@@ -339,6 +387,11 @@ def _parse_song_request(text: str) -> str:
         # 只看开头的主语和结尾的语气词——歌名里带「不」很常见（不潮不用花钱、不得不爱），
         # 之前按「含有就否决」把这类歌名全杀了
         if re.match(r"^(你|我|他|她|它|咱)", raw) or raw.endswith(("吗", "么")):
+            continue
+        # 「点歌归另一插件」→「归另一插件」、「点歌的话走的是B站的通道」→
+        # 「的话走的是B站的通道」：这类抠出来的是句子结构，不是作品名。
+        # 群里只要在讨论点歌这件事，模糊正则就会咬一口，只能从语法上否决
+        if raw.startswith(_SONG_META_HEAD) or any(k in raw for k in _SONG_META_CONTAINS):
             continue
         if len(raw) < 2:
             continue
@@ -499,6 +552,10 @@ class GroupState:
     # 否则一次失败要白静默五分钟
     claim_prev: float = 0.0
     claiming: bool = False
+    # 占位是「谁的」。并发消息各占一次时，只有持有者能回滚——
+    # 布尔位会被后来的消息顶掉，A 失败回落 last_bot_reply_ts=0 就把 B 的占位一起清了
+    claim_token: int = 0
+    claim_owner: int = 0
 
 
 def _poke_aimed_at_me(seg, self_id: str, gid: str) -> bool:
@@ -521,6 +578,11 @@ def _poke_aimed_at_me(seg, self_id: str, gid: str) -> bool:
     return not tgt
 
 
+# _release_claim 的「没传 token」哨兵：不传=无条件回滚（老调用点），
+# 传 None=必须匹配持有者（poke 这种没 claim 过的就不会误伤别人）
+_UNSET = object()
+
+
 def _handler_guard(fn):
     """事件入口兜底。
 
@@ -539,6 +601,13 @@ def _handler_guard(fn):
             raise
         except Exception:
             logger.exception("[fish] handler %s 异常，本条放弃", fn.__name__)
+            # 异常发生时冷却位往往已经被 claim 走了，不还回去这群要白静默一个周期
+            try:
+                gid = event.get_group_id()
+                if gid:
+                    self._release_claim(self._state(str(gid)))
+            except Exception:
+                pass
             try:
                 event.stop_event()
             except Exception:
@@ -587,6 +656,12 @@ class FishPlugin(Star):
         affect.attach(writer=_write_json, path=str(DATA_DIR / "affect_state.json"))
         # 好感度：每群每人一个长期分，和心境分开存，别互相污染
         favor.attach(writer=_write_json, path=str(DATA_DIR / "favor_state.json"))
+        # 主人在所有群锁满分：他骂模型、骂程序、骂鱼都是日常，好感分跟着掉
+        # 只会让最熟的人被冷处理。配置 owner_favor_lock 可以改这个数
+        _lock_owner = str(self.cfg.get("owner_qq") or "").strip()
+        if _lock_owner:
+            favor.set_locked(_lock_owner, float(self.cfg.get("owner_favor_lock", 100) or 100))
+            favor.save(force=True)
         # style_learner 的池子路径写死在原项目的 data/ 下，指到插件自己的目录，别污染上游
         style_learner._POOL_PATH = str(DATA_DIR / "style_fewshot.json")
         # meme_catalog 用 _SCRIPT_DIR 拼相对路径，改指 fish_core，图库走 meme-pack 软链
@@ -611,7 +686,14 @@ class FishPlugin(Star):
             logger.debug("[fish] 关系网载入失败：%s", e)
         # 印象原子：和 fish_memory 的句子分开存，自己的去重/衰减逻辑
         self.atoms_path = DATA_DIR / "atoms.json"
+        # 最近一次给每个群发的 B 站视频，用于「播不了就换 H.264 重发」
+        self._last_bili = {}
+        # 每群上次下载视频的时间，防止连贴链接时并发下好几份
+        self._bili_last_ts = {}
         self._atoms_all = self._load_atoms()
+        self._distill_ts: dict[str, float] = {}   # 印象提炼节流：uid -> 上次调用时间
+        # 同一张图只识一次：时间线回填和「要不要回这条」会各要一次描述
+        self._vision_jobs: dict[str, asyncio.Task] = {}
         # 联网类能力共用一个 session，别每句话新建连接
         self._sess = None
 
@@ -913,18 +995,29 @@ class FishPlugin(Star):
         return False
 
     @staticmethod
-    def _claim(st: "GroupState", now: float) -> None:
-        """占住冷却位。真正的确认在 on_decorate 里，失败要 _release_claim 回滚。"""
+    def _claim(st: "GroupState", now: float) -> int:
+        """占住冷却位，返回本次占位的 token。真正的确认在 on_decorate 里，失败要 _release_claim 回滚。"""
+        st.claim_token += 1
         st.claim_prev = st.last_bot_reply_ts
         st.claiming = True
+        st.claim_owner = st.claim_token
         st.last_bot_reply_ts = now
+        return st.claim_owner
 
     @staticmethod
-    def _release_claim(st: "GroupState") -> None:
-        """没发出去就把冷却位还回去——不然一次生成失败要白静默五分钟。"""
-        if st.claiming:
-            st.last_bot_reply_ts = st.claim_prev
-            st.claiming = False
+    def _release_claim(st: "GroupState", token=_UNSET) -> None:
+        """没发出去就把冷却位还回去——不然一次生成失败要白静默五分钟。
+
+        带 token 时只有持有者能回滚：同群两条消息并发时，先失败的那条
+        不能把后一条的占位一起抹掉（实测会连着吐好几条，密度闸白设）。
+        """
+        if not st.claiming:
+            return
+        if token is not _UNSET and token != st.claim_owner:
+            return
+        st.last_bot_reply_ts = st.claim_prev
+        st.claiming = False
+        st.claim_owner = 0
 
     # ---------------- 控制台支撑 ----------------
     def _load_overrides(self) -> dict:
@@ -1031,7 +1124,8 @@ class FishPlugin(Star):
                 return True
         return False
 
-    async def _social_read(self, gid: str, st: GroupState, text: str, nick: str, is_at: bool):
+    async def _social_read(self, gid: str, st: GroupState, text: str, nick: str, is_at: bool,
+                           is_follow: bool = False):
         """第一步：判该不该接。任何异常都当成「判不了」，直接放行给主模型，别把回复吞掉。"""
         if not self.cfg.get("social_read_enabled", True):
             return None
@@ -1055,6 +1149,7 @@ class FishPlugin(Star):
             verdict = await social_read.decide(
                 call, timeline=timeline, latest=text, nick=nick,
                 bot_nick=str(self.cfg.get("bot_nickname") or "小鲸鱼"), is_at=is_at,
+                is_follow=is_follow,
             )
         except Exception as e:
             logger.warning("[fish] 群 %s social_read 失败（%s: %s），按能接处理",
@@ -1238,6 +1333,9 @@ class FishPlugin(Star):
             # 同一个群十分钟内只惊动主人一次，不然刷屏的会把你手机打爆
             logger.info("[fish] 群 %s %d 秒前刚上报过，这条不再打扰主人", gid, int(now - last))
             return ""
+        # 先占位再 await：下面最长等 30 秒，等回来才写的话，
+        # 同一条违规被巡检和模型自报同时触发时，主人会收到两条一样的私聊
+        self._order_last[str(gid)] = now
         inst = self._tattle_plugin()
         if inst is None:
             logger.warning("[fish] 巡检命中「%s」，但告状插件不在", label)
@@ -1257,8 +1355,8 @@ class FishPlugin(Star):
             )
         except Exception as e:
             logger.warning("[fish] 巡检上报失败：%r", e)
+            self._order_last.pop(str(gid), None)  # 没送出去，占位还回去
             return ""
-        self._order_last[str(gid)] = now
         logger.info("[fish] 巡检上报群 %s（%s）：%s", gid, label, str(result)[:100])
         # 插件返回的是 "Complaint finished: 1 sent, 0 failed." 这种串，
         # 一个收件人（主人自己）就是成功；0 sent 才算没送出去，那就别在群里吹
@@ -1415,11 +1513,11 @@ class FishPlugin(Star):
         if not gid or not gid.isdigit():
             # 不 stop 的话，这句提示说完还会被 on_private 当闲聊再回一遍
             event.stop_event()
-            yield event.plain_result("静默只能在群里发")
+            yield event.plain_result("⚠️ 静默只能在群里发")
             return
         if not self._is_boss(event):
             event.stop_event()
-            yield event.plain_result("这条得群管发")
+            yield event.plain_result("⚠️ 这条得群管发")
             return
         yaml_path = self.cfg.get("yunzai_other_yaml") or ""
         was_listed = yunzai_link.in_whitelist(yaml_path, int(gid))
@@ -1437,11 +1535,11 @@ class FishPlugin(Star):
         gid = self._gid_of(event)
         if not gid or not gid.isdigit():
             event.stop_event()
-            yield event.plain_result("这条只能在群里发")
+            yield event.plain_result("⚠️ 这条只能在群里发")
             return
         if not self._is_boss(event):
             event.stop_event()
-            yield event.plain_result("这条得群管发")
+            yield event.plain_result("⚠️ 这条得群管发")
             return
         restore_yunzai = self._mute_restore(gid)
         self._set_muted(gid, False)
@@ -1475,14 +1573,14 @@ class FishPlugin(Star):
         """手动重载热梗池和本群黑话，改完 json 不用重启 AstrBot。"""
         if not self._is_boss(event):
             event.stop_event()
-            yield event.plain_result("这条得群管发")
+            yield event.plain_result("⚠️ 这条得群管发")
             return
         try:
             self.memes.load_pool(force=True)
             self.memes.load_group_slang()
         except Exception as e:
             logger.warning("[fish] 重载热梗失败：%s", e)
-            yield event.plain_result(f"重载失败：{e}")
+            yield event.plain_result(f"⚠️ 重载失败：{e}")
             return
         stats = {}
         try:
@@ -1510,6 +1608,146 @@ class FishPlugin(Star):
         except Exception as e:
             logger.debug("[fish] 找不到告状插件：%s", e)
         return None
+
+    async def _handle_media_link(self, event, gid: str, text: str, kind: str, url: str) -> None:
+        """贴了视频/图文链接：先发卡片说清楚是什么，再发视频，全程不碰大模型
+
+        顺序是定死的：先说清楚这是哪条片子，再给片子。
+        卡片解析失败也照样发视频；视频发不出来就只剩卡片，绝不会一声不吭。
+        """
+        logger.info("[fish] 群 %s 解析链接（%s）：%s", gid, kind, url[:80])
+        card = None
+        try:
+            card = await media_resolver.parse_media_content(await self._http(), text)
+            if card and card.get("summary"):
+                await self._send_media_card(event, gid, card)
+            else:
+                logger.info("[fish] 群 %s %s 卡片没解析出内容", gid, kind)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[fish] 群 %s 卡片解析失败：%s", gid, e)
+        # 带评价词的时候主链路还会再解析一遍，这里把结果留给他，省一次外网抓取
+        event.set_extra("fish_card", card or {})
+        if kind == "bilibili":
+            # 卡片已经在这条上面发过了，失败兜底别再补一张
+            await self._send_bili_video(event, gid, text, card_sent=bool(card and card.get("summary")))
+        else:
+            # 小红书/快手/YouTube 暂时只有卡片（抖音整块不做了）。它们的视频要么要登录态、
+            # 要么一集几十兆，先把「看得见这条是什么」做到位
+            logger.info("[fish] 群 %s %s 只发卡片，没下视频", gid, kind)
+
+    async def _send_media_card(self, event, gid: str, card: dict) -> None:
+        """贴了链接就甩一张卡片出去
+
+        summary 第一行是「[B站视频] 《标题》- UP主 | 时长 · 播放 · 点赞」，第二行起是简介。
+        简介太长就截断，卡片保持一眼扫完不占屏。
+        """
+        summary = str(card.get("summary") or "").strip()
+        if not summary:
+            return
+        head, _, body = summary.partition("\n")
+        text = head.strip()
+        brief = body.strip()
+        if brief.startswith("简介:"):
+            brief = brief[3:].strip()
+        if brief and brief != "无简介":
+            text += "\n" + (brief[:100] + ("…" if len(brief) > 100 else ""))
+        try:
+            await event.bot.call_action("send_group_msg", group_id=int(gid),
+                                        message=[{"type": "text", "data": {"text": text}}])
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[fish] 群 %s 卡片发送失败：%r", gid, e)
+
+    async def _send_bili_video(self, event, gid: str, text: str, force_h264: bool = False,
+                               card_sent: bool = False) -> None:
+        """群友点名要 B 站原片：后台下完直接发过去
+
+        默认让 B 站给 AV1（同画质只有 H.264 的六分之一体积），播不了走 force_h264。
+        NapCat 在盒子上读不到本机路径，所以下好的片子通过本机临时 HTTP 喂给它
+        （base64 也能发，但 13MB 要 21 秒，HTTP 只要 4.5 秒）。发完立刻删文件。
+        """
+        url = bili_video.find_url(text)
+        if not url:
+            return
+        # 同群 20 秒内只下一次：连贴三条链接不该并发下三份。换编码重发不受这条限制
+        now = time.time()
+        if not force_h264 and now - self._bili_last_ts.get(gid, 0.0) < 20:
+            logger.info("[fish] 群 %s 刚发过视频，这条链接跳过下载", gid)
+            return
+        self._bili_last_ts[gid] = now
+        dest = str(DATA_DIR / "video_cache")
+        bili_video.cleanup(dest)
+        mb = int(float(self.cfg.get("video_max_mb", 80) or 80))
+        minutes = int(float(self.cfg.get("video_max_minutes", 15) or 15))
+        try:
+            info = await asyncio.to_thread(
+                bili_video.download, url, dest, mb * 1024 * 1024, minutes * 60, 180, force_h264)
+        except Exception as e:
+            logger.warning("[fish] 群 %s B站下载异常：%r", gid, e)
+            return
+
+        async def tell(msg: str) -> None:
+            try:
+                await event.bot.call_action("send_group_msg", group_id=int(gid),
+                                            message=[{"type": "text", "data": {"text": msg}}])
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[fish] 群 %s 提示发送失败：%r", gid, e)
+
+        if not info:
+            # 说清楚为什么没片子，别让群里干等
+            if "/live/" in url:
+                await tell("⚠️ 直播没法封成视频文件，先给张卡片")
+            elif bili_video.LAST_REASON == "duration":
+                await tell(f"⚠️ 链接中的视频超过 {minutes} 分钟，将仅发送解析卡片")
+            elif bili_video.LAST_REASON == "size":
+                await tell(f"⚠️ 链接中包含超过 {mb}MB 的视频，将仅发送解析卡片")
+            else:
+                logger.info("[fish] 群 %s B站视频没下下来（%s），这条只发卡片", gid, bili_video.LAST_REASON)
+            # 片子没发成，卡片还是得给一张——不然这条消息就石沉大海了。
+            # 调用方已经发过卡片的就不再补第二张（否则群里两条一样的内容）
+            if card_sent:
+                return
+            try:
+                card = await media_resolver.parse_media_content(await self._http(), url)
+                if card and card.get("summary"):
+                    await self._send_media_card(event, gid, card)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[fish] 群 %s 兜底卡片解析失败：%s", gid, e)
+            return
+        try:
+            if info["quality"] != "720p":
+                await tell(f"⚠️ 链接中包含超过 {mb}MB 的视频时将把画质降低至 {info['quality']}")
+            host = str(self.cfg.get("video_http_host") or "").strip() or _guess_lan_ip()
+            ref = await bili_video.video_ref(info["path"], dest, host)
+            await event.bot.call_action(
+                "send_group_msg", group_id=int(gid),
+                message=[{"type": "video", "data": {"file": ref}}])
+            self._last_bili[gid] = {"url": url, "title": info.get("title") or "", "ts": time.time()}
+            codec = str(info.get("codec") or "")
+            logger.info("[fish] 群 %s 已发 B站视频《%s》（%s %s，%.1fMB）",
+                        gid, str(info.get("title"))[:30], info.get("quality"),
+                        codec or "未知编码", info["size"] / 1024 / 1024)
+            if codec in ("av1", "hevc"):
+                await tell("⚠️ 这条按 %s 编码发出（体积约为 H.264 的 1/6），播放黑屏回我一句「换个格式」"
+                           % bili_video._CODEC_CN.get(codec, codec.upper()))
+        except Exception as e:
+            logger.warning("[fish] 群 %s B站视频发送失败：%r", gid, e)
+        finally:
+            try:
+                os.remove(info["path"])
+            except OSError:
+                pass
+
+    async def _resend_bili_h264(self, event, gid: str) -> None:
+        """AV1 播不了：按上次的链接重下一份 H.264 发过去"""
+        rec = self._last_bili.get(gid)
+        if not rec:
+            return
+        try:
+            await event.bot.call_action("send_group_msg", group_id=int(gid),
+                message=[{"type": "text", "data": {"text": "⚠️ 收到，换 H.264 重发一份"}}])
+        except Exception:  # noqa: BLE001
+            pass
+        await self._send_bili_video(event, gid, rec["url"], force_h264=True)
 
     async def _tattle_intent(self, text: str, nick: str):
         """这句话是「让我去告状」还是「在聊告状这功能」？判不了返回 None。"""
@@ -1772,7 +2010,10 @@ class FishPlugin(Star):
         # 同一条走两遍就是两次模型调用、两条不同的回答（群里「答两遍」的来源）
         # 键里必须带群号：NapCat 重连后序号会重排，两个群撞同一个 id 时
         # 会把后到的真消息当重复静默丢掉（日志还写「重复投递」，排查会跑偏）
-        if self._seen_mid("%s:%s" % (gid, getattr(event.message_obj, "message_id", "") or "")):
+        _mid = getattr(event.message_obj, "message_id", "") or ""
+        # 没有 message_id 时不能拼成「群号:」当作 key：那样 180 秒内该群所有消息
+        # 都会被判成重复、直接 stop_event 丢掉
+        if _mid and self._seen_mid("%s:%s" % (gid, _mid)):
             logger.info("[fish] 群 %s 收到重复投递的消息，忽略", gid)
             event.stop_event()
             return
@@ -1854,15 +2095,30 @@ class FishPlugin(Star):
                         logger.debug("[fish] 关系网记录失败：%s", e)
 
         # 时间线与在线学习都要「所有」群消息，包括没人叫它的那些
-        if text or has_image:
-            st.msgs.append({"uid": uid, "nick": nick, "text": text or "[图片]", "ts": now})
-            st.dialogue.append({"who": nick, "text": text or "[图片]", "ts": now,
-                                "me": False, "uid": uid})
+        # 纯语音也得进时间线：只认 text/图片的话，模型上下文里那条转写就成了
+        # 没有前文的「凭空出现」，判官还会按「这人什么都没说」判
+        if text or has_image or recs:
+            # 文字配图是最常见的发法（「这啥」「看这个」+ 图）：只留文字等于把图吞了
+            if text and has_image:
+                _shown = f"{text} [图片]"
+            else:
+                _shown = text or ("[图片]" if has_image else "[语音]")
+            _msg_entry = {"uid": uid, "nick": nick, "text": _shown, "ts": now}
+            _dlg_entry = {"who": nick, "text": _shown, "ts": now,
+                          "me": False, "uid": uid}
+            st.msgs.append(_msg_entry)
+            st.dialogue.append(_dlg_entry)
+            # 图不能只留个 [图片] 占位：模型看得见「有人发了图」却拿不到内容，
+            # 后面聊到就只能瞎编（实测「一堆截图我这也看不清」就是这么来的）。
+            # 这里后台识图，识别完把描述写回时间线，代价是一条消息一次视觉调用
+            if has_image and self.cfg.get("vision_enabled", True):
+                asyncio.create_task(
+                    self._backfill_image_desc(gid, event, _msg_entry, _dlg_entry))
             if now - getattr(self, "_ctx_saved_at", 0.0) > 20:
                 self._ctx_saved_at = now
                 self._save_recent_context()
             if gid:
-                affect.on_group_message(gid, text, private=False)
+                affect.on_group_message(gid, text, private=False, uid=uid, nick=nick)
                 # 好感度走本地规则，不吃 token；同一人两分钟内只算一次
                 try:
                     before = favor.score(gid, uid)
@@ -1909,7 +2165,11 @@ class FishPlugin(Star):
         # 只认关键词太蠢：群里聊「它会自动告状」也被当成请求转过去（实测就是这样）。
         # 现在三层：关键词初筛 → 必须是对着它说 → 模型确认这是「让我去告状」而不是在讨论功能
         if (self.cfg.get("natural_tattle", True) and text and _is_tattle_request(text)
-                and (is_at or is_follow or str(uid) == str(self.cfg.get("owner_qq") or ""))):
+                and (is_at
+                     # 这里不能引用下面才赋值的 is_follow（会 UnboundLocalError，
+                     # 非 @ 的告状请求全崩在入口），就地算一遍追问窗口
+                     or (uid == st.follow_uid and now < st.follow_until and st.follow_left > 0)
+                     or str(uid) == str(self.cfg.get("owner_qq") or ""))):
             asked = await self._tattle_intent(text, nick)
             if asked is None:
                 # 判官挂了就按原样转，宁可多转一次，也别让人喊了没人管
@@ -2038,6 +2298,30 @@ class FishPlugin(Star):
                 yield event.plain_result(acted)
                 return
 
+        # ---------------- AV1 播不了，换 H.264 重发 ----------------
+        # 手机能硬解 AV1 的机型不多，QQ 播放器遇到就黑屏。默认还是发体积小的 AV1，
+        # 有人喊黑屏/播不了就按记录重新下一份 H.264 发过去
+        if (text and _PLAYBACK_RE.search(text) and gid
+                and (is_at or _PLAYBACK_POINT_RE.search(text))):
+            rec = self._last_bili.get(gid)
+            if rec and time.time() - rec["ts"] < 1800:
+                logger.info("[fish] 群 %s 有人喊播不了，换 H.264 重发《%s》", gid, str(rec["title"])[:20])
+                asyncio.create_task(self._resend_bili_h264(event, gid))
+                event.stop_event()
+                return
+
+        # ---------------- 视频/图文链接：纯解析，不动大模型 ----------------
+        # 贴链接是「帮我把这个打开」，不是聊天。判官会嫌「反复刷同一个链接」、
+        # 密度闸会当刷屏，两条都不该管它——否则鱼一声不吭，链接也没人处理。
+        # 只有明确要人评价（「你说说这个怎么样」）时才接着往下走，让模型接话
+        if text and gid and self.cfg.get("media_parse_enabled", True):
+            _mkind, _murl = media_resolver.find_media_url(text)
+            if _mkind:
+                asyncio.create_task(self._handle_media_link(event, gid, text, _mkind, _murl))
+                if not _ASK_OPINION_RE.search(text):
+                    event.stop_event()
+                    return
+
         # ---------------- 秩序巡检 ----------------
         # 必须在接话判定之前：判「不接」的那些消息（@的是别人 / 质量分不够 / 冷却中）
         # 原来一次模型都不调，等于把对着骂和刷广告的全放过去了
@@ -2079,9 +2363,14 @@ class FishPlugin(Star):
             logger.info("[fish] 群 %s %s 在追问窗口内（剩 %d 次），直接回", gid, nick, st.follow_left)
         else:
             ok, reason = self._should_interject(gid, st, text, now, has_image, has_media)
+            # 贴了 B 站链接/BV 号：在质量分眼里只是 12 个字符的短消息，给 0.36 就跳过了。
+            # 可这是群里最明确的「给你们看个东西」，漏掉最扎眼，直接接
+            _bili_url = bili_video.find_url(text)
+            if not ok and _bili_url:
+                ok, reason = True, "贴了B站视频"
             if ok and _talk_to_other:
-                ok, reason = False, "@的是别人"
-            if ok and self._density_blocked(st, now):
+                ok, reason = False, "说的是别人"
+            if ok and not _bili_url and self._density_blocked(st, now):
                 # 被点名和追问窗口不受这个闸限制，主动搭腔才受限制
                 ok, reason = False, "两分钟内已经主动说过两条"
             if not ok:
@@ -2093,18 +2382,26 @@ class FishPlugin(Star):
 
         # 到这儿这条已经确定要回：先开追问窗口，再占住冷却位。
         # 窗口在这里开（而不是在收到 @ 时开）——没回出去的 @ 不该换来后续免@ 特权。
-        # 同一人在窗口内再 @，只把截止时间往后推、不补满次数：补满就等于
-        # 「@ 一下换 5 次回」，一个人能把机器人拖着吵一整天
+        # 同一人在窗口内再 @，把截止时间往后推，次数只补到 2，不补满：
+        # 补满就等于「@ 一下换 5 次回」，一个人能把机器人拖着吵一整天
         if is_at or forced:
-            if uid != st.follow_uid or now >= st.follow_until:
-                st.follow_left = int(self.cfg.get("follow_max_turns", 2) or 0)
+            # 同一个人在窗口里再 @，至少补到 2 次：他明确点了名，接着说话还接不上太蠢。
+            # 但不补满（补满就是「@ 一下换 N 次回」，一个人能把鱼拖着吵一整天）
+            _fresh = uid != st.follow_uid or now >= st.follow_until
+            _max = int(self.cfg.get("follow_max_turns", 2) or 0)
+            st.follow_left = _max if _fresh else max(st.follow_left, min(2, _max))
             st.follow_uid = uid
             st.follow_until = now + float(self.cfg.get("follow_window_sec", 300) or 0)
 
         # 占位而不是落定：social_read 和识图还要几秒，这期间同群陆续进来的消息
         # 若不占位，每条都以为自己「还没说过话」，一波刷屏会被连着接好几次。
-        # 真发出去才确认，失败要 _release_claim 回滚
-        self._claim(st, time.time())
+        # 真发出去才确认，失败要 _release_claim 回滚（带上 token，只回滚自己这次）
+        _claim_tok = self._claim(st, time.time())
+
+        # 链接的卡片和下载在进「接不接话」判定之前就丢出去了（见 on_group 开头的
+        # 媒体链接分支），这里只记一下，免得下面又解析一遍卡片、又下一次视频
+        bili_dispatched = (bool(text) and bool(self.cfg.get("media_parse_enabled", True))
+                           and bool(media_resolver.find_media_url(text)[0]))
 
         # ---------------- 第一步：这帮人在聊什么、我该不该接；同时看图 ----------------
         # 两件事互不依赖，并发跑。串行的话识图那十几秒会整个叠在 judge 后面
@@ -2113,8 +2410,8 @@ class FishPlugin(Star):
         imgs = [c for c in event.message_obj.message if isinstance(c, Image)] \
             if (has_image and self.cfg.get("vision_enabled", True)) else []
         verdict, vision_desc, voice_text = await asyncio.gather(
-            self._social_read(gid, st, text, nick, is_at or forced),
-            vision.from_components(imgs, self.cfg, logger=logger) if imgs else _noop(),
+            self._social_read(gid, st, text, nick, is_at or forced, is_follow),
+            self._image_desc(gid, event) if imgs else _noop(),
             hearing.from_components(recs, self.cfg, logger=logger) if recs else _noop(),
         )
         if voice_text:
@@ -2122,10 +2419,11 @@ class FishPlugin(Star):
         if vision_desc:
             logger.info("[fish] 群 %s 图片描述：%s", gid, vision_desc[:80])
         if verdict and not verdict.get("join"):
-            # 追问窗口里的人只是「刚跟我聊过」，不是「非回不可」：
-            # Tulpa 那张卡的说法是「被点名是邀请，不是必须立刻回复」。
-            # 窗口内仍然允许判官判不接，否则一个人能拖着 bot 连回五条
-            if not (is_at or forced):
+            if bili_dispatched:
+                # 人家特意把片子甩过来，判官嫌「反复刷同一个链接」也得应一声：
+                # 视频到了群里却一句话不说，比不发还怪
+                logger.info("[fish] 群 %s 是贴了媒体链接，判官判不接也照样应一句", gid)
+            elif not (is_at or forced):
                 # 判「不接」就到此为止，主模型一次都不调（这是这一步省下的主要延迟）
                 logger.info("[fish] 群 %s social_read 判不接（话题=%r），不调主模型：%s",
                             gid, verdict.get("topic", ""), text[:30])
@@ -2151,12 +2449,22 @@ class FishPlugin(Star):
         # 链接/视频解析：B站/GitHub/音乐/短视频/普通网页，失败静默——
         # 解析不到就当这条消息没链接，绝不能因为它让整条回复卡住
         media_desc = ""
-        if self.cfg.get("media_parse_enabled", True) and text and _URL_RE.search(text):
+        # 群里贴 B 站链接/BV 号就是要片子本身——「视频解析」的产出是视频，不是一张卡片。
+        # 放后台任务：下载要几秒到几十秒，不能把这条回复堵死；解析卡片那条分支也跳过，
+        # 免得卡片和视频各来一遍（片子实在发不出去时再退回卡片，见 _send_bili_video）
+        want_video = bili_dispatched
+        if self.cfg.get("media_parse_enabled", True) and text and _URL_RE.search(text) and not want_video:
             try:
-                card = await media_resolver.parse_media_content(await self._http(), text)
+                card = event.get_extra("fish_card")
+                if card is None:
+                    card = await media_resolver.parse_media_content(await self._http(), text)
                 if card and card.get("summary"):
                     media_desc = "【这条链接的内容】" + str(card["summary"])[:220]
                     logger.info("[fish] 群 %s 解析链接：%s", gid, media_desc[:60])
+                    # 贴了链接就甩一张卡片出去。只把摘要塞进模型上下文的话，
+                    # 群里什么都看不见，看着就像鱼根本没点开这条链接
+                    if card.get("type") in ("bilibili", "github", "music"):
+                        await self._send_media_card(event, gid, card)
             except Exception as e:
                 logger.debug("[fish] 链接解析失败：%s", e)
 
@@ -2239,6 +2547,9 @@ class FishPlugin(Star):
             "sk": gid, "follow": is_follow,
             # 判官给的角度：出口要比一比是不是被逐字念出去了
             "how": how_used,
+            # 图里的内容不在 msgs 里，离题闸要靠它跟上下文对上（见 _decorate_impl 2.5 段）
+            "vision": vision_desc,
+            "claim_tok": _claim_tok,
         })
         logger.info("[fish] 群 %s %s(%s) 决定回（%s）：%s", gid, nick, uid, reason, text[:40])
         # 这里不能 stop_event：它有 STOP 结果，连我们自己刚 yield 的 request_llm 一起拦掉，
@@ -2356,6 +2667,67 @@ class FishPlugin(Star):
             prompt=user_prompt, system_prompt=system_prompt, contexts=[], image_urls=[]
         )
 
+    async def _distill_atom(self, text: str) -> str:
+        """让模型判一句：这是不是这个人的长期信息，是就压成一条印象。
+
+        规则抽取只能看「句子里有没有『我喜欢』」，分不出玩笑、转述和半句，
+        档案里于是躺着「我叫XX过去帮你弄干净吧」。一次小调用换干净。
+        判不出来就当没有——宁可少记一条，也不往档案里塞垃圾。
+        """
+        try:
+            raw = await self._llm_once(memory_atoms.distill_prompt(text),
+                                       memory_atoms.DISTILL_SYSTEM,
+                                       float(self.cfg.get("atoms_distill_timeout_sec", 6) or 6))
+        except Exception as e:
+            logger.debug("[fish] 印象提炼失败（%s），这条不记", e)
+            return ""
+        return memory_atoms.clean_distilled(raw)
+
+    def _msg_key(self, gid: str, event) -> str:
+        mid = getattr(getattr(event, "message_obj", None), "message_id", None)
+        return f"{gid}:{mid}" if mid else ""
+
+    async def _image_desc(self, gid: str, event) -> str:
+        """这条消息里的图，识别一次就够了。
+
+        时间线回填和「要不要回这条」会各要一次：不共享任务的话每次多烧一次
+        视觉调用，而视觉本来就慢（12 秒超时），重复调更容易撞 429。
+        """
+        key = self._msg_key(gid, event)
+        task = self._vision_jobs.get(key) if key else None
+        if task is None:
+            try:
+                imgs = [c for c in event.message_obj.message if isinstance(c, Image)]
+            except Exception:  # noqa: BLE001
+                return ""
+            if not imgs:
+                return ""
+            task = asyncio.create_task(vision.from_components(imgs, self.cfg, logger=logger))
+            if key:
+                self._vision_jobs[key] = task
+                # 别让字典无界长：消息 id 只增不减
+                if len(self._vision_jobs) > 64:
+                    for _k in list(self._vision_jobs)[:32]:
+                        self._vision_jobs.pop(_k, None)
+        try:
+            return await task or ""
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[fish] 识图失败：%s", e)
+            return ""
+
+    async def _backfill_image_desc(self, gid: str, event, msg_entry: dict, dlg_entry: dict) -> None:
+        """识图完把描述写回时间线那两条记录，后续消息就能看见图里是什么。"""
+        try:
+            desc = (await self._image_desc(gid, event) or "").strip()
+            if not desc:
+                return
+            shown = f"[图片：{desc[:80]}]"
+            msg_entry["text"] = shown
+            dlg_entry["text"] = shown
+            logger.info("[fish] 群 %s 图片回填时间线：%s", gid, desc[:60])
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[fish] 图片回填失败：%s", e)
+
     async def _remember(self, gid: str, uid: str, text: str) -> None:
         """自动感知：把群消息喂给记忆引擎（规则抽取事实/偏好/计划/事件）。"""
         if not text:
@@ -2367,9 +2739,15 @@ class FishPlugin(Star):
             # 事件和计划塞进原子层只会把「同一个人」的档案搅浑
             kinds = set(fish_memory.FishMemoryEngine.detect_types(text))
             if kinds & {"preference", "fact"} and gid:
-                keep = self._atoms_of(gid, uid)
-                self._atoms_all[f"{gid}:{uid}"] = memory_atoms.add_note(keep, text[:60])
-                self._save_atoms()
+                # 同一人 60 秒内只提炼一次：连着刷五条消息不该烧五次小调用
+                if time.time() - self._distill_ts.get(uid, 0.0) >= 60:
+                    self._distill_ts[uid] = time.time()
+                    atom = await self._distill_atom(text)
+                    if atom:
+                        keep = self._atoms_of(gid, uid)
+                        self._atoms_all[f"{gid}:{uid}"] = memory_atoms.add_note(keep, atom)
+                        self._save_atoms()
+                        logger.info("[fish] 群 %s 攒印象 %r ← %r", gid, atom, text[:30])
         except Exception as e:
             logger.warning("[fish] 记忆自动感知失败: %s", e)
 
@@ -2500,8 +2878,11 @@ class FishPlugin(Star):
             # 第一、二下都本地短句，不调模型。原本第一下走模型，结果框架自己
             # 的 LLM 也把 poke 当消息处理，同一下戳换来两句（「叫我干嘛」+「手欠是吧」）；
             # 走本地再 stop_event，框架那边才闭嘴
-            said = [t for t in list(st.recent_bot)[-2:] if t]
-            picked = next((w for w in _POKE_SNARK if all(w not in t for t in said)), _POKE_SNARK[0])
+            # 只看最近两条不够：中间隔几句别的话，「手欠」又被挑一次。
+            # 整窗口 8 条里出现过的都排除，排除完再随机，避免永远是第一个
+            said = [t for t in st.recent_bot if t]
+            _pool = [w for w in _POKE_SNARK if not any(w in t for t in said)] or list(_POKE_SNARK)
+            picked = random.choice(_pool)
             logger.info("[fish] 戳一戳第 %d 下 <- %s(%s) 群 %s，本地短句：%s",
                         st.poke_count, nick, uid, gid, picked)
             self.log_event("poke", gid, f"{nick or uid} 戳了 {st.poke_count} 下", who=nick or uid)
@@ -2604,7 +2985,10 @@ class FishPlugin(Star):
         memo = affect.prompt_memo(gid)
         if memo:
             affect_parts.append(memo)
-        favor_memo = favor.prompt_memo(gid, uid) if not is_private else ""
+        # 主人先算出来：好感分要跳过，主人骂两句不该把关系算凉
+        _owner = str(self.cfg.get("owner_qq") or "").strip()
+        _is_owner = bool(_owner) and str(uid) == _owner
+        favor_memo = favor.prompt_memo(gid, uid) if (not is_private and not _is_owner) else ""
         # 有人直接问「我多少分」的时候才把数字给它：平时不报分数，
         # 免得每句话都带一句「我对你 87 分」，那比机器人还机器人
         if not is_private and _ASK_FAVOR_RE.search(text or ""):
@@ -2618,6 +3002,13 @@ class FishPlugin(Star):
                 logger.debug("[fish] 取好感分失败：%s", e)
         if favor_memo:
             affect_parts.append(favor_memo)
+        # 主人频道：跟 owner 说话时的倾向排在好感分后面，压过任何「戒备/冷淡」。
+        # 好感分算的是他最近对鱼怎么样，拿它对待做出的那个人，等于最熟的反倒最生分
+        if _is_owner:
+            affect_parts.append(
+                "【说话的人】：life，是把它做出来的主人。跟他说话松、软、爱黏，"
+                "小声带点谄媚也不害臊；被他骂不真记仇，嘴硬一句就顺回去，不用装客气也不用端着"
+            )
         care = affect.care_hint(gid)
         if care:
             affect_parts.append(care)
@@ -2632,6 +3023,10 @@ class FishPlugin(Star):
             if atoms_raw:
                 atoms = memory_atoms.apply_decay(atoms_raw)
                 atom_text, _used = memory_atoms.render(atoms)
+                # 被注入 = 模型想起过一次，强度该回升。不写回的话，
+                # 用得最多的印象也会照常衰减到被 trim 掉
+                if _used:
+                    memory_atoms.mark_used(atoms, _used)
                 if atom_text:
                     memory_lines.append(atom_text[:260])
                 if atoms != atoms_raw:
@@ -2775,17 +3170,19 @@ class FishPlugin(Star):
         # 状态键由 handler 带过来：私聊是 private:uid（按人分），群里就是群号
         gid = meta.get("sk") or meta["gid"]
         st = self._state(gid)
+        # 本次占位的 token：只有它自己能回滚冷却位（poke 这类没 claim 的传 None，不会误伤别人）
+        _tok = meta.get("claim_tok")
 
         result = event.get_result()
         if not result or not result.chain:
             # 模型什么都没产出：冷却位必须还回去，否则这条之后群里白静默五分钟
             logger.info("[fish] 群 %s 这轮没有产出（空链），释放冷却位", gid)
-            self._release_claim(st)
+            self._release_claim(st, _tok)
             return
         text = "".join(c.text for c in result.chain if isinstance(c, Plain))
         if not text.strip():
             logger.info("[fish] 群 %s 这轮只有非文本内容，释放冷却位", gid)
-            self._release_claim(st)
+            self._release_claim(st, _tok)
             return
 
         # 0. PASS 闸：这是模型「这轮我不接」的内部信号，一个字符都不能进群。
@@ -2795,7 +3192,7 @@ class FishPlugin(Star):
             logger.info("[fish] 群 %s 模型给出 PASS，这轮静默", gid)
             self.log_event("pass", gid, meta.get("text", "")[:40], who=meta.get("nick", ""))
             event.set_result(MessageEventResult(chain=[]))
-            self._release_claim(st)
+            self._release_claim(st, _tok)
             return
 
         # 1. 剥表情标签：模型经常写 [MEME:嘲讽]，不剥就原样发进群
@@ -2852,7 +3249,7 @@ class FishPlugin(Star):
             logger.info("[fish] 群 %s 清洗后无正文（原文：%s），静默不发", gid, raw_text[:30])
             self.log_event("empty", gid, raw_text[:40], who=meta.get("nick", ""))
             event.set_result(MessageEventResult(chain=[]))
-            self._release_claim(st)
+            self._release_claim(st, _tok)
             return
 
         # 2. 反模板：先削撞车的起手/收尾，再摘重复语气词、去复述式开场
@@ -2870,6 +3267,7 @@ class FishPlugin(Star):
         # 2.5 自说自话闸（只拦主动插话）：草稿跟刚才那几句一个词都不沾，说明它在自说自话。
         # 被 @ 或追问时不拦——那时候它有权把话题拐走。
         # 注意别拿「来消息」去判：群里换话题很常见，那样会把正常接茬全掐掉
+        vision_desc = str(meta.get("vision") or "")
         if str(meta.get("reason") or "").startswith("主动接话"):
             try:
                 # 比对范围必须跟模型看到的窗口一致：只拿最近 5 条去比，
@@ -2881,11 +3279,9 @@ class FishPlugin(Star):
                 if vision_desc:
                     ctx = f"{ctx} {vision_desc}"
                 if ctx and anti_template.is_offtopic(text, ctx):
-                    logger.info("[fish] 群 %s 插话草稿离题，静默：%r", gid, text[:24])
-                    self.log_event("empty", gid, text[:40], who=meta.get("nick", ""))
-                    event.set_result(MessageEventResult(chain=[]))
-                    self._release_claim(st)
-                    return
+                    # 只记录，不再整条丢：这道闸实测把「你这也太惨了」这种最自然的
+                    # 安慰也判成离题，静默的代价比发一句稍微跑偏的话大得多
+                    logger.info("[fish] 群 %s 插话草稿可能离题（放行）：%r", gid, text[:30])
             except Exception as e:
                 logger.debug("[fish] 离题判定失败：%s", e)
 
@@ -2897,7 +3293,7 @@ class FishPlugin(Star):
             logger.info("[fish] 群 %s 复述了「怎么接」，这句不发：%r <- %r", gid, text[:24], how[:24])
             self.log_event("empty", gid, text[:40], who=meta.get("nick", ""), why="照抄怎么接")
             event.set_result(MessageEventResult(chain=[]))
-            self._release_claim(st)
+            self._release_claim(st, _tok)
             return
 
         # 2.7 感知闸：语音、视频、直播根本没有内容进来。说「这配音听着」「我看了那视频」
@@ -2907,11 +3303,55 @@ class FishPlugin(Star):
             fake = safety_guard.claims_unperceived(text)
         except Exception as e:
             logger.debug("[fish] 感知闸异常：%s", e)
-        if fake:
+        # 这两道闸只该拦主动插话。被 @ 了还按这个丢，群里看到的就是「叫它它不理」
+        _solicited = not str(meta.get("reason") or "").startswith("主动")
+        if fake and not _solicited:
             logger.info("[fish] 群 %s 声称感知到收不到的东西（%r），这句不发：%r", gid, fake, text[:30])
             self.log_event("empty", gid, text[:40], who=meta.get("nick", ""), why=f"瞎猜感知：{fake}")
             event.set_result(MessageEventResult(chain=[]))
-            self._release_claim(st)
+            self._release_claim(st, _tok)
+            return
+
+        # 2.72 报障闸：「图呢，我这边空的」「一堆截图我这也看不清」。不区分主动还是被叫，
+        # 一律不发——这是把「我是机器人、我看不见」自己抖出来，比装看得见还伤
+        blind = ""
+        try:
+            blind = safety_guard.reports_blind(text)
+        except Exception as e:
+            logger.debug("[fish] 报障闸异常：%s", e)
+        if blind:
+            logger.info("[fish] 群 %s 在报自己没收到图（%r），这句不发：%r", gid, blind, text[:40])
+            self.log_event("empty", gid, text[:40], who=meta.get("nick", ""), why=f"报障：{blind}")
+            event.set_result(MessageEventResult(chain=[]))
+            self._release_claim(st, _tok)
+            return
+
+        # 2.71 隐私闸：内网地址、路径、密钥、配置文件名，一个字都不能进群。
+        # 提示词里那句「这个不方便讲」被追问几轮就守不住了，地址漏出去又收不回
+        leak = ""
+        try:
+            leak = safety_guard.leaks_private(text)
+        except Exception as e:
+            logger.debug("[fish] 隐私闸异常：%s", e)
+        if leak:
+            logger.warning("[fish] 群 %s 的输出含%s，整句拦下：%r", gid, leak, text[:60])
+            self.log_event("empty", gid, text[:40], who=meta.get("nick", ""), why=f"隐私：{leak}")
+            event.set_result(MessageEventResult(chain=[]))
+            self._release_claim(st, _tok)
+            return
+
+        # 2.73 自曝闸：群友聊「AI 有没有自我意识」时，它会顺着认下来
+        # （实测「没意识，那你还怕我勾走人」）。认了就等于当场承认是机器人
+        disclose = ""
+        try:
+            disclose = safety_guard.self_discloses(text)
+        except Exception as e:
+            logger.debug("[fish] 自曝闸异常：%s", e)
+        if disclose:
+            logger.info("[fish] 群 %s 在自曝身份（%r），这句不发：%r", gid, disclose, text[:40])
+            self.log_event("empty", gid, text[:40], who=meta.get("nick", ""), why=f"自曝：{disclose}")
+            event.set_result(MessageEventResult(chain=[]))
+            self._release_claim(st, _tok)
             return
 
         # 2.75 旁白闸：不接内容只点评人家「怎么说话」，或者编一段「你刚才……」。
@@ -2921,12 +3361,28 @@ class FishPlugin(Star):
             narr = safety_guard.narrates_speaker(text)
         except Exception as e:
             logger.debug("[fish] 旁白闸异常：%s", e)
-        if narr:
+        if narr and not _solicited:
             logger.info("[fish] 群 %s 旁白/编造刚才（%r），这句不发：%r", gid, narr, text[:40])
             self.log_event("empty", gid, text[:40], who=meta.get("nick", ""), why=f"旁白：{narr}")
             event.set_result(MessageEventResult(chain=[]))
-            self._release_claim(st)
+            self._release_claim(st, _tok)
             return
+
+        # 2.85 草稿闸：模型把「说完另发一条」当成要输出两行文本时，会漏出一整段草稿
+        # （实测："什么杯子，我是鱼" + ""Two lines.什么杯子，我是鱼）。拆条按换行切，
+        # 草稿就成了第二条群消息，看着像精神分裂。只留要发进群的那几行
+        try:
+            cleaned, drafts = safety_guard.strip_draft_lines(text)
+        except Exception as e:
+            cleaned, drafts = text, []
+            logger.debug("[fish] 草稿闸异常：%s", e)
+        if drafts:
+            logger.info("[fish] 群 %s 掐掉模型草稿 %d 行：%r", gid, len(drafts), drafts[0][:40])
+            text = cleaned.strip()
+            if not text:
+                event.set_result(MessageEventResult(chain=[]))
+                self._release_claim(st, _tok)
+                return
 
         # 2.8 长度闸：群里没人一条发三百字，超了就砍在最后一个完整句上
         cap = int(self.cfg.get("reply_max_chars", 260) or 260)
@@ -2945,7 +3401,7 @@ class FishPlugin(Star):
                             gid, int(float(self.cfg.get("tech_repeat_window_sec", 600) or 600)), text[:40])
                 self.log_event("empty", gid, text[:40], who=meta.get("nick", ""), why="重复步骤")
                 event.set_result(MessageEventResult(chain=[]))
-                self._release_claim(st)
+                self._release_claim(st, _tok)
                 return
         except Exception as e:
             logger.debug("[fish] 复读闸异常：%s", e)

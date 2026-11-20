@@ -184,19 +184,24 @@ def _get(group_id) -> dict:
     return settle(_state[key])
 
 
-def _add_care(state: dict, topic: str, now: float):
-    """牵挂账本：同一件事只记一次，4 小时后才允许问，最多问两次。"""
+def _add_care(state: dict, topic: str, now: float, uid: str = "", nick: str = ""):
+    """牵挂账本：同一件事只记一次，4 小时后才允许问，最多问两次。
+
+    必须记是谁说的：不记人的话，A 说明天面试，鱼转头去问 B「面试怎么样」。
+    """
     threads = state.setdefault("care", [])
     threads = [t for t in threads if isinstance(t, dict) and now - float(t.get("created", 0)) < 48 * 3600]
-    if any(t.get("topic") == topic for t in threads):
+    if any(t.get("topic") == topic and str(t.get("uid", "")) == str(uid) for t in threads):
         state["care"] = threads[-5:]
         return
     threads.append({"topic": topic, "created": now, "due": now + 4 * 3600,
-                    "prompted": 0, "last": 0.0})
+                    "prompted": 0, "last": 0.0,
+                    "uid": str(uid), "nick": (nick or "")[:16]})
     state["care"] = threads[-5:]
 
 
-def on_group_message(group_id, text: str, private: bool = False, now: float | None = None):
+def on_group_message(group_id, text: str, private: bool = False, now: float | None = None,
+                     uid: str = "", nick: str = ""):
     """一条群友消息对心境的影响。全部本地规则，零 token。"""
     global _dirty
     now = now if now is not None else time.time()
@@ -219,7 +224,7 @@ def on_group_message(group_id, text: str, private: bool = False, now: float | No
         state["pout"] = float(state["pout"]) * 0.5
         for pattern, topic in _CARE_RULES:
             if pattern.search(text):
-                _add_care(state, topic, now)
+                _add_care(state, topic, now, uid, nick)
                 break
 
     if _SERIOUS_RE.search(text) and len(text) >= 10:
@@ -366,7 +371,9 @@ def care_hint(group_id, now: float | None = None) -> str:
         t["last"] = now
         _dirty = True
         save()
-        return f"【惦记着的事】：对方之前提过「{t['topic']}」，可以顺口问一句，别问第二遍，也别显得在查岗。"
+        who = t.get("nick") or "对方"
+        return (f"【惦记着的事】：{who}之前提过「{t['topic']}」，可以顺口问一句，"
+                f"别问第二遍，也别显得在查岗。是问 {who}，别问成别人。")
     return ""
 
 

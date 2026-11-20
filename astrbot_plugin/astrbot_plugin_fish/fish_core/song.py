@@ -175,7 +175,9 @@ class SongService:
         return out[:3]
 
     def _cache_dir(self) -> str:
-        d = os.path.join(self._media_dir, "cache")
+        # 不能放进 _media_dir：它每次初始化都会被 reclaim_stale 整目录 rmtree，
+        # 缓存等于每次启动归零，7 天 TTL 从来没生效过
+        d = os.path.join(os.path.dirname(self._media_dir), "song_cache")
         os.makedirs(d, exist_ok=True)
         return d
 

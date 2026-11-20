@@ -20,6 +20,9 @@ INTERJECT_QUESTION_HINTS = (
 INTERJECT_CODE_HINTS = ("报错", "traceback", "npm", "pip", "git", "docker", "编译", "配置")
 # 点名要看全名：群里单独一个「你」十有八九指别人
 _ADDRESS_WORDS = ("小鲸鱼", "大肥鱼", "肥鱼")
+# 链接本身就是「有东西可看」的强信号，别按字数判它没内容
+_LINK_HINT_RE = re.compile(
+    r"(?:https?://\S+|BV[0-9A-Za-z]{10}|av\d{5,}|b23\.tv/\S+|分享给你)", re.I)
 
 
 def interject_threshold(desire: float) -> float:
@@ -78,6 +81,11 @@ def score_message_quality(
     if has_media:
         score += 0.20
         hits.append("带卡片")
+    # 甩了个链接或 BV 号过来，是「我给你们看个东西」，群里最该接的场景。
+    # 光看字数会把它当低信息量：BV1NEW16wEGN 才 12 个字符，只能拿 0.40，直接被门槛挡掉
+    if _LINK_HINT_RE.search(t):
+        score += 0.25
+        hits.append("发了链接")
 
     if recent_msgs >= 3:
         score += 0.06

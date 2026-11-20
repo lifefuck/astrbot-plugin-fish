@@ -51,6 +51,9 @@ MEMES_FILE = os.path.join(DATA_DIR, MEMES_FILENAME)
 CORE_FILE = os.path.join(DATA_DIR, CORE_FILENAME)
 # 本群黑话：由 scripts/mine_group_slang.py 从真实群聊里挖出来，按群分开
 SLANG_FILENAME = "group_slang.json"
+SLANG_MIN_N = 4        # 群黑话至少出现这么多次才算词，低于这个多是分词碎片
+# 这些 source 给的是新闻标题，不是梗
+_HOT_NEWS_SOURCES = ("news", "bilibili-hot-search", "tieba-hot", "weibo-hot")
 
 # 兜底过滤：这是最后一道闸。正式过滤在 scripts/sync_hot_words.py，
 # 但 push() 的词可能来自实时消息，不能假设上游已经清洗过
@@ -216,7 +219,12 @@ class MemeManager:
     def group_slang_words(self, group_id) -> List[Dict[str, Any]]:
         if not getattr(self, "group_slang", None):
             self.load_group_slang()
-        return list(self.group_slang.get(str(group_id or ""), []))
+        words = list(self.group_slang.get(str(group_id or ""), []))
+        # 挖词是按字面切的，切出来一半是「问个」「穿个」「本群」这种语法碎片。
+        # 它们照样被写进【你们群常挂嘴边的词】，白占预算还教模型说怪话。
+        # 真梗至少被人反复说过：留出现 4 次以上、且不止一个人说的
+        return [w for w in words
+                if int(w.get("n") or 0) >= SLANG_MIN_N and int(w.get("u") or 0) >= 2]
 
     def load_pool(self, force: bool = False) -> None:
         """从 JSON 加载词库并初始化轮换池（mtime 没变就跳过）"""
@@ -241,8 +249,11 @@ class MemeManager:
             self.all_memes = [
                 m for m in raw
                 if isinstance(m, dict) and str(m.get("name") or "").strip()
-                # news 是热搜里的新闻标题，不是梗，进池子只会挤掉真梗
-                and str(m.get("source") or "") != "news"
+                # news 是热搜里的新闻标题，不是梗，进池子只会挤掉真梗。
+                # bilibili-hot-search / 贴吧 那批同理：67 条词库里 44 条是
+                # 「特朗普抵达深圳」这种标题，模型被喂这个只会更接不上话
+                and str(m.get("source") or "") not in _HOT_NEWS_SOURCES
+                and str(m.get("type") or "") != "社区热搜"
             ][:TOTAL_HARD_CAP]
             self.last_file_mtime = mtime
 
