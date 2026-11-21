@@ -3726,15 +3726,28 @@ class FishPlugin(Star):
         })
         logger.info("[fish] 戳一戳 <- %s(%s) 群 %s 第 %d 下，走模型；待回消息：%s",
                     nick, uid, gid, st.poke_count, (pending_text[:30] or "无"))
-        # 先回戳再回话：两件事互不等待，戳要秒到，话照旧慢慢说
-        self.log_event("poke", gid, f"{nick or uid} 戳了一下", who=nick or uid)
-        if self.cfg.get("poke_back", True):
-            await _poke_back(getattr(event, "bot", None), gid, uid, self_id)
-        # 戳一戳以前是「零记忆」地回一句，等于每次见面都重新认识；
-        # 把同一段上文接上，它才知道刚才聊到哪
-        # 模型是异步出的：request_llm 交出去之后这边就收不到「失败了」的回调。
-        # 挂个看门狗，超时还没动静就用兜底短句补一句，别让一戳下去毫无反应。
+        # 看门狗必须第一个挂：它在任何一步卡住时都还有机会补一句话。
+        # 之前它挂在 log_event / _poke_back 后面，实测 _poke_back 的
+        # call_action 一旦等不到对端回包，整个 async generator 就悬在那儿，
+        # 看门狗没挂上、request_llm 也没交出去，表现是戳完毫无反应且不兜底。
         self._spawn_poke_watch(event, gid, uid, nick, st, now)
+        # 记账不该挡回话：库里一次 IO 卡住，戳就白戳了
+        try:
+            self.log_event("poke", gid, f"{nick or uid} 戳了一下", who=nick or uid)
+        except Exception as e:
+            logger.warning("[fish] 戳一戳记账失败：%s %s", type(e).__name__, e)
+        # 先回戳再回话：两件事互不等待，戳要秒到，话照旧慢慢说。
+        # 回戳是锦上添花，绝不能挡住回话，所以只等 1.5 秒，之后丢后台自己跑完
+        if self.cfg.get("poke_back", True):
+            try:
+                await asyncio.wait_for(
+                    _poke_back(getattr(event, "bot", None), gid, uid, self_id), 1.5)
+            except asyncio.TimeoutError:
+                logger.warning("[fish] 回戳 1.5s 没回包，先让回话走")
+            except Exception as e:
+                logger.warning("[fish] 回戳失败：%s %s", type(e).__name__, e)
+        # 模型是异步出的：request_llm 交出去之后这边就收不到「失败了」的回调，
+        # 超时没动静就由上面那只看门狗补一句兜底短句
         yield event.request_llm(prompt=user_prompt, system_prompt=system_prompt,
                                 contexts=self._ctx_of(st, ""), tool_set=NO_TOOLS)
 
@@ -3748,6 +3761,8 @@ class FishPlugin(Star):
         pool = self.cfg.get("poke_fallback_pool") or list(poke_context.FALLBACK_POOL)
         before_n = len(st.recent_bot)
         before_ts = float(getattr(st, "last_bot_reply_ts", 0) or 0)
+
+        logger.info("[fish] 戳兜底看门狗已挂（%.0fs）", timeout)
 
         async def _watch():
             await asyncio.sleep(timeout)
