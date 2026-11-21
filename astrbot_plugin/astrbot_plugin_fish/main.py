@@ -672,6 +672,9 @@ class GroupState:
     follow_uid: str = ""
     follow_until: float = 0.0
     follow_left: int = 0
+    # 「这是在跟别人说」的延续：某人 @ 了别人，紧接着那句没 @ 的也还是冲对方说的。
+    # uid -> 最近一次 @ 别人的时间戳
+    other_dir: dict = field(default_factory=dict)
 
     # 戳一戳连击：同一个人一分钟内反复戳，得知道这是第几下，
     # 否则每戳一次都当「第一次被戳」来写，十下就是十句同款抱怨
@@ -2638,6 +2641,16 @@ class FishPlugin(Star):
         # @ 了别人就不算「接着跟我说」：追问窗口是按「我刚说过话」开的，
         # 不是按「他冲我说」开的，中间他一转头跟别人聊，窗口就该让路
         _talk_to_other = self._at_others(event)
+        if _talk_to_other:
+            # 记一笔：这人这会儿在跟别人说话。紧跟着的那句没 @，也还是冲对方说的
+            # （实测：@我是神人「感觉哈基米没有GPT有人味」→ 下一句「感觉Muse是最
+            #  有人味的」没带 @，鱼当是在夸自己，回了「主人自己做的当然偏心它」）
+            st.other_dir[uid] = now
+        elif not is_at:
+            _other_ts = st.other_dir.get(uid, 0.0)
+            # 90 秒内且这中间我没插过话 = 还在跟对方聊，不该轮到我
+            if _other_ts and now - _other_ts < 90 and st.last_bot_reply_ts < _other_ts:
+                _talk_to_other = True
         if (not (is_at or forced) and not _talk_to_other and self.cfg.get("reply_when_at", True)
                 and uid == st.follow_uid and now < st.follow_until):
             if st.follow_left > 0:
