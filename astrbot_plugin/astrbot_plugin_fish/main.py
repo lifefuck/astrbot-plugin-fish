@@ -381,7 +381,22 @@ _POKE_BACK_TS: dict[str, float] = {}
 # 而这种情况本来也不需要"懂上下文"，只需要一句没耐心的打发
 # 池子要够大：写七个词时实测一天里「手欠」出现四次，因为每次都从第一个挑
 _POKE_SNARK = ("手欠", "别戳", "再戳收费", "干嘛啊", "戳啥", "轻点", "欠揍",
-               "又来", "手别乱动", "摸头要钱的", "找打", "啧", "戳上瘾了")
+               "又来", "手别乱动", "摸头要钱的", "找打", "啧", "戳上瘾了",
+               "戳我干嘛", "有完没完", "手痒是吧", "谁准你戳的", "轻点儿",
+               "别动手", "说不戳还戳", "你闲得慌", "戳坏你赔", "够了啊",
+               "再戳咬你", "摸一下就得了", "催什么催")
+
+
+def _pick_poke(said) -> str:
+    """挑一句最近没说过的戳一戳短句。
+
+    池子再大也会撞：一天几十次戳，纯随机会把同一个词复读出来
+    （实测「轻点」两小时里出现两次，「摸头要钱的」也是两回），
+    群里看就是复读机。整窗口排除，排除空了才退回全池随机。
+    """
+    said = [t for t in (said or []) if t]
+    pool = [w for w in _POKE_SNARK if not any(w in t for t in said)]
+    return random.choice(pool or list(_POKE_SNARK))
 
 _BUILTIN_COMMANDS = frozenset({
     "help", "reset", "new", "stop", "sid", "stats",
@@ -2394,6 +2409,10 @@ class FishPlugin(Star):
                 quote_ctx = await self._quote_context(event)
             except Exception as e:
                 logger.debug("[fish] 取引用内容失败：%s", e)
+        # 合并转发喂进来的是 OCR 式转述：鱼读得懂一半、读不懂另一大半，
+        # 读不懂就只能评一句「这记录我看了两遍还是没看出在讲啥」。没人叫就别接
+        _has_forward = any(type(c).__name__.lower() in ("forward", "nodes", "node")
+                           for c in (event.message_obj.message or []))
 
         nick = event.get_sender_name() or uid
         # 别的机器人：不接、不进时间线、不占插话机会。
@@ -2769,6 +2788,13 @@ class FishPlugin(Star):
                 self.log_event("skip", gid, "[图片]", who=nick, why="纯图片·不主动评价")
                 await self._remember(gid, uid, "[图片]")
                 return
+            # 转发同理：转述里的东西大概率读不懂，主动评就是「啥玩意」
+            # 「这养的啥我看不出来」。带了一句话再算它想说事
+            if _has_forward and not text:
+                logger.info("[fish] 群 %s 有人转发、没人叫，不主动接", gid)
+                self.log_event("skip", gid, "[转发]", who=nick, why="转发·不主动评价")
+                await self._remember(gid, uid, "[转发]")
+                return
             ok, reason = self._should_interject(gid, st, text, now, has_image, has_media, uid)
             # 贴了 B 站链接/BV 号：在质量分眼里只是 12 个字符的短消息，给 0.36 就跳过了。
             # 可这是群里最明确的「给你们看个东西」，漏掉最扎眼，直接接
@@ -3071,7 +3097,7 @@ class FishPlugin(Star):
                 event.stop_event()
                 return
             st.last_bot_reply_ts = now
-            picked = random.choice(_POKE_SNARK)
+            picked = _pick_poke(st.recent_bot)
             st.recent_bot.append(picked)
             logger.info("[fish] 私聊被戳 <- %s，回戳 + 短句：%s", nick, picked)
             event.stop_event()
@@ -3511,8 +3537,7 @@ class FishPlugin(Star):
             # 只看最近两条不够：中间隔几句别的话，「手欠」又被挑一次。
             # 整窗口 8 条里出现过的都排除，排除完再随机，避免永远是第一个
             said = [t for t in st.recent_bot if t]
-            _pool = [w for w in _POKE_SNARK if not any(w in t for t in said)] or list(_POKE_SNARK)
-            picked = random.choice(_pool)
+            picked = _pick_poke(said)
             logger.info("[fish] 戳一戳第 %d 下 <- %s(%s) 群 %s，本地短句：%s",
                         st.poke_count, nick, uid, gid, picked)
             self.log_event("poke", gid, f"{nick or uid} 戳了 {st.poke_count} 下", who=nick or uid)
