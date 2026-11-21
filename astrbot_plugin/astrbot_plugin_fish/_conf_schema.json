@@ -712,6 +712,18 @@
     "default": 3,
     "hint": "一次无差别攻击最多 @ 的人数。"
   },
+  "poke_model_timeout_sec": {
+    "description": "戳一戳走模型时的兜底超时（秒）",
+    "type": "int",
+    "default": 12,
+    "hint": "超过这个时间还没出话，就发一句本地兜底短句，保证这一戳有回应。"
+  },
+  "poke_fallback_pool": {
+    "description": "戳一戳兜底短句池",
+    "type": "list",
+    "default": ["手欠", "别戳", "干嘛啊", "戳啥", "再戳收费"],
+    "hint": "只在模型超时/失败时用，平时一律走模型。5 句以内够了：池子再大也治不了复读，能让模型自己写才行。"
+  },
   "prompt_budget_memory_max": {
     "description": "拼进提示词的记忆条数上限",
     "type": "int",

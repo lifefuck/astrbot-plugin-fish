@@ -80,3 +80,19 @@ def build_prompt(info: dict, who_hint: str, repeat: int = 1, last_said=None) -> 
         f"{extra}"
         "不要说「有什么需要帮忙」，别写动作括号，别写 [表情:xx] [情绪:xx] 这类标签，别用客套话。只输出这一句："
     )
+
+# 模型超时/失败时的兜底短句。只留 5 句：正常情况一律走模型，
+# 这几句只保证「戳了至少有个回应」；池子再大也治不了复读，能自己写才行
+FALLBACK_POOL = ("手欠", "别戳", "干嘛啊", "戳啥", "再戳收费")
+
+
+def pick_fallback(said, pool=None) -> str:
+    """挑一句最近没说过的兜底短句。
+
+    池子只有 5 句，撞车概率天然高，所以照样排除最近说过的；全都被说过就随机挑。
+    """
+    import random
+    said = [t for t in (said or []) if t]
+    cand = list(pool or FALLBACK_POOL) or list(FALLBACK_POOL)
+    rest = [w for w in cand if not any(w in t for t in said)]
+    return random.choice(rest or cand)

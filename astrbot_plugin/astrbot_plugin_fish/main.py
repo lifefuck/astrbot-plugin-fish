@@ -376,27 +376,10 @@ def _write_json(path: str, data, pretty: bool = False) -> None:
 
 # 回戳的时间戳：同一个人 3 秒内只回戳一次，避免两边互戳成死循环
 _POKE_BACK_TS: dict[str, float] = {}
-# 被同一个人一分钟内戳第二下时的固定短句池。2~4 字，避开上一次说过的：
-# 这里不走模型——连戳时模型每次都写长句，拆条之后就是刷屏，
-# 而这种情况本来也不需要"懂上下文"，只需要一句没耐心的打发
-# 池子要够大：写七个词时实测一天里「手欠」出现四次，因为每次都从第一个挑
-_POKE_SNARK = ("手欠", "别戳", "再戳收费", "干嘛啊", "戳啥", "轻点", "欠揍",
-               "又来", "手别乱动", "摸头要钱的", "找打", "啧", "戳上瘾了",
-               "戳我干嘛", "有完没完", "手痒是吧", "谁准你戳的", "轻点儿",
-               "别动手", "说不戳还戳", "你闲得慌", "戳坏你赔", "够了啊",
-               "再戳咬你", "摸一下就得了", "催什么催")
-
-
-def _pick_poke(said) -> str:
-    """挑一句最近没说过的戳一戳短句。
-
-    池子再大也会撞：一天几十次戳，纯随机会把同一个词复读出来
-    （实测「轻点」两小时里出现两次，「摸头要钱的」也是两回），
-    群里看就是复读机。整窗口排除，排除空了才退回全池随机。
-    """
-    said = [t for t in (said or []) if t]
-    pool = [w for w in _POKE_SNARK if not any(w in t for t in said)]
-    return random.choice(pool or list(_POKE_SNARK))
+# 戳一戳正常走模型（poke_context.build_prompt 负责「被戳了一下」的提示），
+# 本地只剩 5 句兜底，给模型超时/失败时补一句——池子治不了复读，能自己写才行
+# 挑选逻辑放 fish_core/poke_context 里，那边能离线测
+_pick_poke = poke_context.pick_fallback
 
 _BUILTIN_COMMANDS = frozenset({
     "help", "reset", "new", "stop", "sid", "stats",
@@ -731,6 +714,8 @@ def _poke_aimed_at_me(seg, self_id: str, gid: str) -> bool:
 
 
 # _release_claim 的「没传 token」哨兵：不传=无条件回滚（老调用点），
+
+
 # 传 None=必须匹配持有者（poke 这种没 claim 过的就不会误伤别人）
 _UNSET = object()
 
@@ -3237,11 +3222,19 @@ class FishPlugin(Star):
                 event.stop_event()
                 return
             st.last_bot_reply_ts = now
-            picked = _pick_poke(st.recent_bot)
-            st.recent_bot.append(picked)
-            logger.info("[fish] 私聊被戳 <- %s，回戳 + 短句：%s", nick, picked)
-            event.stop_event()
-            yield event.plain_result(picked)
+            # 私聊的戳同样走模型：本地短句只有 5 句，戳几次就开始复读
+            _pi = poke_context.decide(st.msgs, uid, st.last_bot_reply_ts, now)
+            _sysp = composer.build_system_prompt(
+                prompts.SYSTEM_PROMPT,
+                bot_nick=str(self.cfg.get("bot_nickname") or "小鲸鱼"),
+                bot_qq=self_id, group_id="private", is_private=True,
+            )
+            _userp = poke_context.build_prompt(
+                _pi, f"戳你的是「{nick}」", repeat=1, last_said=list(st.recent_bot)[-2:])
+            logger.info("[fish] 私聊被戳 <- %s，走模型", nick)
+            self._spawn_poke_watch(event, "private", uid, nick, st, now)
+            yield event.request_llm(prompt=_userp, system_prompt=_sysp,
+                                    contexts=self._ctx_of(st, ""), tool_set=NO_TOOLS)
             return
 
         # 私聊里空消息/纯 @/纯表情：插件不接，框架自己会回「？」「咋了」，一句一句跟着刷。
@@ -3701,26 +3694,6 @@ class FishPlugin(Star):
             event.stop_event()
             return
 
-        if st.poke_count <= 2 and not pending_text:
-            # 第一、二下都本地短句，不调模型。原本第一下走模型，结果框架自己
-            # 的 LLM 也把 poke 当消息处理，同一下戳换来两句（「叫我干嘛」+「手欠是吧」）；
-            # 走本地再 stop_event，框架那边才闭嘴
-            # 只看最近两条不够：中间隔几句别的话，「手欠」又被挑一次。
-            # 整窗口 8 条里出现过的都排除，排除完再随机，避免永远是第一个
-            said = [t for t in st.recent_bot if t]
-            picked = _pick_poke(said)
-            logger.info("[fish] 戳一戳第 %d 下 <- %s(%s) 群 %s，本地短句：%s",
-                        st.poke_count, nick, uid, gid, picked)
-            self.log_event("poke", gid, f"{nick or uid} 戳了 {st.poke_count} 下", who=nick or uid)
-            favor.on_poke(gid, uid)
-            st.last_poke_reply_ts = now
-            st.recent_bot.append(picked)
-            if self.cfg.get("poke_back", True):
-                await _poke_back(getattr(event, "bot", None), gid, uid, self_id)
-            event.stop_event()
-            yield event.plain_result(picked)
-            return
-
         if is_admin:
             who_hint = "戳你的是你主人"
         else:
@@ -3751,16 +3724,57 @@ class FishPlugin(Star):
             "text": pending_text or f"（{nick} 戳了戳你）",
             "at": False, "reason": "戳一戳·补回未回" if pending_text else "戳一戳·手欠",
         })
-        logger.info("[fish] 戳一戳 <- %s(%s) 群 %s，待回消息：%s", nick, uid, gid,
-                    (pending_text[:30] or "无"))
+        logger.info("[fish] 戳一戳 <- %s(%s) 群 %s 第 %d 下，走模型；待回消息：%s",
+                    nick, uid, gid, st.poke_count, (pending_text[:30] or "无"))
         # 先回戳再回话：两件事互不等待，戳要秒到，话照旧慢慢说
         self.log_event("poke", gid, f"{nick or uid} 戳了一下", who=nick or uid)
         if self.cfg.get("poke_back", True):
             await _poke_back(getattr(event, "bot", None), gid, uid, self_id)
         # 戳一戳以前是「零记忆」地回一句，等于每次见面都重新认识；
         # 把同一段上文接上，它才知道刚才聊到哪
+        # 模型是异步出的：request_llm 交出去之后这边就收不到「失败了」的回调。
+        # 挂个看门狗，超时还没动静就用兜底短句补一句，别让一戳下去毫无反应。
+        self._spawn_poke_watch(event, gid, uid, nick, st, now)
         yield event.request_llm(prompt=user_prompt, system_prompt=system_prompt,
                                 contexts=self._ctx_of(st, ""), tool_set=NO_TOOLS)
+
+    def _spawn_poke_watch(self, event, gid: str, uid: str, nick: str, st, now: float) -> None:
+        """戳一戳走模型时的兜底看门狗。
+
+        request_llm 是「把活交出去」，模型超时、报错、被出口闸拦掉时这边一个字都收不到。
+        超时窗口内最近发言没变化就补一句本地短句，保证这一戳不是石沉大海。
+        """
+        timeout = float(self.cfg.get("poke_model_timeout_sec", 12) or 12)
+        pool = self.cfg.get("poke_fallback_pool") or list(poke_context.FALLBACK_POOL)
+        before_n = len(st.recent_bot)
+        before_ts = float(getattr(st, "last_bot_reply_ts", 0) or 0)
+
+        async def _watch():
+            await asyncio.sleep(timeout)
+            # 模型已经出话：正常，不用管
+            if len(st.recent_bot) != before_n or float(getattr(st, "last_bot_reply_ts", 0) or 0) != before_ts:
+                return
+            said = [t for t in st.recent_bot if t]
+            picked = _pick_poke(said, pool)
+            try:
+                bot = getattr(event, "bot", None)
+                payload = ({"user_id": int(uid), "message": picked} if gid == "private"
+                           else {"group_id": int(gid), "message": picked})
+                action = "send_private_msg" if gid == "private" else "send_group_msg"
+                await bot.api.call_action(action, **payload)
+            except Exception as e:
+                logger.warning("[fish] 戳一戳兜底发送失败 %s(%s)：%s %s", nick, uid, type(e).__name__, e)
+                return
+            st.last_poke_reply_ts = time.time()
+            st.recent_bot.append(picked)
+            logger.info("[fish] 戳一戳模型 %.0fs 没出话，兜底短句：%s", timeout, picked)
+            self.log_event("poke_fallback", gid, picked, who=nick or uid)
+            self._record_spoke(gid, uid, picked, reason="戳一戳·兜底")
+
+        try:
+            asyncio.get_running_loop().create_task(_watch())
+        except Exception as e:
+            logger.debug("[fish] 戳兜底看门狗没挂上：%s", e)
 
     # ---------------- prompt 拼装 ----------------
     # 开口就是「催什么」「急什么」这类问句：同一天说第四遍时群里一眼看出是复读机
