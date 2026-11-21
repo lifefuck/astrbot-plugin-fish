@@ -43,7 +43,7 @@ def needs_games_kb(text: str) -> bool:
     return entity and any(w in low for w in _HOW_WORDS)
 
 
-def style_samples_hint(group_id) -> str:
+def style_samples_hint(group_id, limit: int = 3) -> str:
     """从本群真实聊天里抽几组「有人说→别人怎么接」，给模型一个语感锚点。
 
     形容词教不会语气，示例才教得会；每次随机换一批，避免它把某一组背成口头禅。
@@ -96,19 +96,65 @@ def build_system_prompt(base_persona: str, bot_nick: str, bot_qq: str, group_id:
     where = "私聊" if is_private else f"群 {group_id}"
     identity = (
         # 别用「账号」「对话」这种系统口吻：它越觉得自己是个程序，回话越容易端着
-        f"（你是「{bot_nick}」，一条住在群里的鲸鱼娘。群里叫的傻鱼、大肥鱼、鲸宝也都是你，"
-        f"不是别人也不是山寨货。你的 QQ 号是 {bot_qq}，现在在{where}说话）\n"
+        f"（你是「{bot_nick}」，群里的鲸鱼娘。傻鱼、大肥鱼、鲸宝也是你，不是别人。"
+        f"你 QQ 是 {bot_qq}，现在在{where}说话）\n"
     )
     # 这段只留会当场露馅的硬东西：标签、Markdown、内部概念都会原样出现在群里。
     # 写成「不要×N」的清单时，模型每句话前都在核对，回话明显发钝（实测一段 17 个「不要」）；
     # 换成正面描述加后果说明，它自己就知道该写什么。
     rule = (
-        "\n【输出】写进群里那句台词本身，直接说事。群友看到的是原样文本："
-        "标签、Markdown、英文思考、关于怎么发消息的说明都会露出来。不 @ 人。"
-        "好感度、记忆、插件、模型、AI 这些词不进正文，你就是群里的人。"
-        "开场「咋了」「在」「喂」一场最多一次。\n"
+        "\n【输出】直接写群里那句台词。标签、Markdown、英文思考、怎么发消息的说明都会原样露出来。"
+        "不 @ 人。好感度、记忆、插件、模型、AI 不进正文。开场「咋了」「在」一场最多一次。\n"
     )
     return f"{identity}{base_persona}{rule}"
+
+
+
+# ==================== 拼装预算 ====================
+# 提醒类注入的优先级：吵架 > 跨群 > 社交解读 > 防复读 > 表情包 > 百科。
+# 超预算时从尾巴开始丢——宁可少给一条让人物自己发挥，也不要一堆互相打架的提示。
+_HINT_ORDER = ("quarrel", "cross", "social", "anti_repeat", "meme", "wiki")
+
+
+def _trim_bullets(text: str, limit: int) -> str:
+    """把「抬头 + 若干 - 条目」的块裁到 limit 条，抬头保留。"""
+    if not text or limit <= 0:
+        return ""
+    lines = [ln for ln in text.split("\n") if ln.strip()]
+    head = [ln for ln in lines if not ln.lstrip().startswith(("-", "•", "*"))]
+    items = [ln for ln in lines if ln.lstrip().startswith(("-", "•", "*"))]
+    if len(items) <= limit:
+        return text
+    return "\n".join(head + items[:limit])
+
+
+def _cjk_bigrams(text: str) -> set:
+    """粗粒度相关性：中文取二元组，数字与字母原样保留。够用来判断「这句和上文有没有关系」。"""
+    t = re.sub(r"\s+", "", str(text or ""))
+    grams = set(re.findall(r"[0-9a-zA-Z]{2,}", t))
+    for i in range(len(t) - 1):
+        pair = t[i:i + 2]
+        if re.match(r"[\u4e00-\u9fff]{2}", pair):
+            grams.add(pair)
+    return grams
+
+
+def timeline_is_thin(timeline: list, latest: str, min_related: int = 1) -> str:
+    """返回 'empty' / 'thin' / ''。
+
+    空上下文时让模型硬答，它只能靠编：常见的是把「你们刚才说的那个」当成真事接着圆，
+    或者凭空接一个不存在的上文。这里只判「有没有可用的上文」，说不说仍归 decide()。
+    """
+    lines = [str(x) for x in (timeline or []) if str(x).strip()]
+    if not lines:
+        return "empty"
+    if len(lines) == 1:
+        base = _cjk_bigrams(latest)
+        # 只有一条上文时，看它和当前这句有没有共同二元组；一个都没有就是「接不上」
+        if base and not (base & _cjk_bigrams(lines[0])):
+            return "thin" if min_related >= 1 else ""
+        return ""
+    return ""
 
 
 def build_user_prompt(
@@ -131,6 +177,9 @@ def build_user_prompt(
     cross_hint: str = "",
     quarrel_hint: str = "",
     include_timeline: bool = True,
+    meme_hint: str = "",
+    wiki_hint: str = "",
+    budget: dict | None = None,
 ) -> str:
     """按原项目顺序拼 user prompt。"""
     parts = []
@@ -162,34 +211,44 @@ def build_user_prompt(
     else:
         parts.append("（没人叫你，这句是群友之间的闲聊；插话就一两句，接着话头说）")
 
-    if memory_lines:
-        parts.append("\n【你还记得的关于他/她的事】：")
-        parts.extend("- " + m for m in memory_lines)
+    _b = budget or {}
+    _mem_max = int(_b.get("memory", 2) or 0)
+    if _mem_max > 0 and memory_lines:
+        parts.append("\n【你还记得的关于他/她的事】（括号里是谁在什么时候说的，直接用，别问）：")
+        parts.extend("- " + m for m in memory_lines[:_mem_max])
 
     if affect_parts:
         parts.append("")
         parts.extend(affect_parts)
 
     if style_hint:
-        parts.append(style_hint)
-
-    if anti_repeat_hint:
-        parts.append(anti_repeat_hint)
+        parts.append(_trim_bullets(style_hint, int(_b.get("style", 3) or 0)))
 
     if games_kb:
         parts.append("\n【云崽指令清单（群友在问用法，按这个答）】：\n" + games_kb)
 
-    if social_hint:
-        # 第一步（social_read）的结论，只给角度不给原文，免得模型把「该怎么接」复述出来
-        parts.append(social_hint)
-
-    if cross_hint:
-        parts.append(cross_hint)
-
-    if quarrel_hint:
-        # 有人刚骂了它/它主人。这段只在真正触发的那一轮出现，绝不进常驻人设：
-        # 常驻一条「被骂就喷回去」会让它把调侃也当挑衅，闲聊全毁
-        parts.append("\n" + quarrel_hint)
+    # 提醒类总共只给 hint 预算那么多条：全塞进去模型会挑最像「指令」的那条照做，
+    # 其余互相打架的提示反而变成噪音。按 _HINT_ORDER 的优先级留前 N 条
+    _hint_pool = {
+        "quarrel": quarrel_hint,
+        "cross": cross_hint,
+        "social": social_hint,
+        "anti_repeat": anti_repeat_hint,
+        "meme": meme_hint,
+        "wiki": wiki_hint,
+    }
+    _hint_max = int(_b.get("hint", 2) or 0)
+    _kept = [k for k in _HINT_ORDER if (_hint_pool.get(k) or "").strip()][:_hint_max]
+    for _k in _kept:
+        _txt = _hint_pool[_k]
+        if _k == "quarrel":
+            # 有人刚骂了它/它主人。这段只在真正触发的那一轮出现，绝不进常驻人设：
+            # 常驻一条「被骂就喷回去」会让它把调侃也当挑衅，闲聊全毁
+            parts.append("\n" + _txt)
+        elif _k == "anti_repeat":
+            parts.append(_txt)
+        else:
+            parts.append(_txt)
 
     parts.append(time_hint(now))
     return "\n".join(parts)

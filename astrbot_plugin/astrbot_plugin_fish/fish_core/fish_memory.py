@@ -509,7 +509,9 @@ class FishMemoryEngine:
                 "id": d["memory_id"],
                 "content": d["content"],
                 "type": d["memory_type"],
-                "score": score
+                "score": score,
+                # 谁在什么时候说的：拼进 prompt 时要用，不然模型会把旧事当现状
+                "created_at": d.get("created_at"),
             })
 
         results.sort(key=lambda x: x["score"], reverse=True)

@@ -2316,6 +2316,30 @@ class FishPlugin(Star):
             return "ok"
         return "fail" if hit["v"] else "notfound"
 
+    @staticmethod
+    def _fmt_mem_when(ts):
+        """把记忆时间戳压成「今天/昨天/3 天前/9 月 12 日」。
+        模型看绝对时间戳没感觉，看「上个月」才知道这是旧事、不能当现状说。"""
+        try:
+            t = float(ts or 0)
+        except (TypeError, ValueError):
+            return ""
+        if t <= 0:
+            return ""
+        import time as _t
+        now = _t.time()
+        d = int((now - t) // 86400)
+        if now - t < 3600:
+            return "刚才"
+        if now - t < 86400 and _t.localtime(t).tm_mday == _t.localtime(now).tm_mday:
+            return "今天"
+        if d <= 1:
+            return "昨天"
+        if d < 30:
+            return f"{d} 天前"
+        lt = _t.localtime(t)
+        return f"{lt.tm_mon} 月 {lt.tm_mday} 日"
+
     @filter.event_message_type(EventMessageType.ALL)
     @_handler_guard
     async def on_at_only(self, event: AstrMessageEvent):
@@ -3085,6 +3109,24 @@ class FishPlugin(Star):
         # 有正文也有引用：两样都给模型，不然「你看看这个」接不上引用的是啥
         if quote_ctx and prompt_text and quote_ctx not in prompt_text:
             prompt_text = f"{prompt_text}\n{quote_ctx}"
+        # 空上下文：没上文、或只有一条且跟这句接不上时，模型只能靠编——
+        # 常见的是把「你们刚才说的那个」当真事接着圆。被叫就先问一句短的让人补，
+        # 没人叫就直接不开口。这一条在 decide() 之后，只决定「调不调模型」。
+        if not self._ctx_of(st, event.get_extra("fish_ctxline") or text):
+            _thin = self._thin_context(st, prompt_text or text)
+            if _thin:
+                _ask = bool(self.cfg.get("empty_context_ask_short", True)) and is_at
+                logger.info("[fish] 群 %s 上下文太薄（%s），不调主模型%s", gid, _thin,
+                            "，先问一句" if _ask else "")
+                self.log_event("skip", gid, (text or "")[:40], who=nick,
+                               why=f"上下文太薄·{_thin}")
+                await self._remember(gid, uid, text)
+                self._release_claim(st, _claim_tok)
+                if _ask:
+                    yield event.plain_result(random.choice(prompts.THIN_CONTEXT_ASKS))
+                elif is_at:
+                    event.stop_event()
+                return
         try:
             system_prompt, user_prompt, _ctx_llm = await self._compose(
                 gid, uid, nick, prompt_text, is_at, st, self_id=self_id,
@@ -3900,6 +3942,18 @@ class FishPlugin(Star):
             ctx.pop()
         return ctx
 
+    def _thin_context(self, st: "GroupState", text: str) -> str:
+        """时间线为空、或只有一条且跟当前这句接不上时返回 'empty'/'thin'，否则 ''。
+
+        只判「有没有可用的上文」，说不说仍由 decide() 和调用方定。
+        """
+        window_sec = float(self.cfg.get("context_window_sec", 1800) or 1800)
+        now_ref = time.time()
+        raw = [x for x in list(st.dialogue)[:-1]
+               if now_ref - float(x.get("ts") or 0) <= window_sec]
+        lines = [f"{x.get('who')}：{x.get('text')}" for x in raw]
+        return composer.timeline_is_thin(lines, text)
+
     async def _compose(self, gid, uid, nick, text, is_at, st: GroupState, is_private: bool = False,
                        ctx_line: str = "",
                        self_id: str = "", vision_desc: str = "", media_hint: str = "",
@@ -3941,7 +3995,12 @@ class FishPlugin(Star):
                             if m in content and len(m) < len(content):
                                 memory_lines[i] = content
                         continue
-                    memory_lines.append(content)
+                    # 只给一句话，模型分不清是「他刚说的」还是「上个月别人说的」，
+                    # 于是会拿旧事当现状答。带上说话人和时间，它才知道该不该引用
+                    _who = nick or "他"
+                    _when = self._fmt_mem_when(item.get("created_at") or item.get("ts"))
+                    memory_lines.append(f"{_who}（{_when}）说过：{content}" if _when
+                                        else f"{_who}说过：{content}")
                     if len(memory_lines) >= 2:    # 给太多反而更乱，两条够了
                         break
             except Exception as e:
@@ -4071,9 +4130,16 @@ class FishPlugin(Star):
             sender_uid=uid,
             memory_lines=memory_lines,
             affect_parts=affect_parts,
-            style_hint=((composer.style_samples_hint(gid) if gid != "private" else "")
-                        + ("\n" + meme_hint if meme_hint else "")
-                        + ("\n" + wiki_hint if wiki_hint else "")),
+            style_hint=(composer.style_samples_hint(
+                gid, int(self.cfg.get("prompt_budget_style_max", 3) or 3))
+                if gid != "private" else ""),
+            meme_hint=meme_hint,
+            wiki_hint=wiki_hint,
+            budget={
+                "memory": int(self.cfg.get("prompt_budget_memory_max", 2) or 0),
+                "style": int(self.cfg.get("prompt_budget_style_max", 3) or 0),
+                "hint": int(self.cfg.get("prompt_budget_hint_max", 2) or 0),
+            },
             anti_repeat_hint=composer.anti_repeat_hint(list(st.recent_bot)),
             games_kb=prompts.GAMES_KB if prompts.needs_games_kb(text) else "",
             is_at=is_at,

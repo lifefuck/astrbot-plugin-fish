@@ -712,6 +712,30 @@
     "default": 3,
     "hint": "一次无差别攻击最多 @ 的人数。"
   },
+  "prompt_budget_memory_max": {
+    "description": "拼进提示词的记忆条数上限",
+    "type": "int",
+    "default": 2,
+    "hint": "多了反而把人物的口气冲散。只留最相关的几条，超了按相关度丢。"
+  },
+  "prompt_budget_style_max": {
+    "description": "拼进提示词的风格样例上限（组）",
+    "type": "int",
+    "default": 3,
+    "hint": "样例是给人学口气的，三组就够。硬塞十组，模型会开始抄样例的字。"
+  },
+  "prompt_budget_hint_max": {
+    "description": "拼进提示词的提醒类块数上限",
+    "type": "int",
+    "default": 2,
+    "hint": "吵架/跨群/社交解读/防复读/表情包/百科这些提示加起来最多几条。超了按优先级丢，优先级：吵架>跨群>社交>防复读>表情包>百科。"
+  },
+  "empty_context_ask_short": {
+    "description": "上下文太薄时先问一句短的",
+    "type": "bool",
+    "default": true,
+    "hint": "时间线为空、或只有一条且跟当前这句接不上时不调主模型：被@就先问一句短的让人补，没人叫就直接不开口。关掉等于一律不开口。"
+  },
   "speak_decision_shadow": {
     "description": "开口判定影子模式",
     "type": "bool",
