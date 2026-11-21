@@ -92,6 +92,25 @@ def _hard_cut(chunk: str, limit: int) -> list[str]:
     return pieces
 
 
+def _pack_sentences(text: str, max_parts: int, max_chars: int) -> list[str]:
+    """名额不够时按句号重新打包，而不是按字数硬切。
+
+    按字数切会把句号吃掉、把两句粘成一个空格（实测：「这个很简单。 你看懂了吗？」），
+    群里看着就像打字漏标点。这里只在句末标点之间分组。
+    """
+    sents = [s for s in re.split(r"(?<=[。！？!?…~～])", text) if s.strip()]
+    if not sents:
+        return [text]
+    flat: list[str] = []
+    for s in sents:
+        flat.extend(_hard_cut(s, max_chars) if len(s) > max_chars * 2 else [s])
+    n = len(flat)
+    if n <= max_parts:
+        return ["".join(flat)]
+    per = -(-n // max_parts)   # 向上取整
+    return ["".join(flat[i:i + per]) for i in range(0, n, per)][:max_parts]
+
+
 def _fold_tail(parts: list[str], max_parts: int, max_chars: int) -> list[str]:
     """条数超了：多出来的部分再按字数切开，而不是拼成一堵长墙。
 
@@ -105,11 +124,9 @@ def _fold_tail(parts: list[str], max_parts: int, max_chars: int) -> list[str]:
     # 条数预算是剩下的名额，绝不能靠「多切几条」解决——max_parts=1 时那是直接违约
     budget = max(1, max_parts - len(head))
     if len(extra) > budget:
-        # 名额不够了：把全文按名额重新均分，而不是把剩下的塞成一条长墙。
-        # 两害相权——「3 条各 80 字」比「26+26+188」像人说话，也比刷 8 条强
+        # 名额不够了：按句末标点重新打包，保留标点，别在句子中间硬切
         whole = "".join(parts)
-        target = max(max_chars, (len(whole) + max_parts - 1) // max_parts)
-        return _hard_cut(whole, target)[:max_parts] or [whole]
+        return _pack_sentences(whole, max_parts, max_chars) or [_hard_cut(whole, max_chars)[:max_parts]][0]
     return head + extra
 
 
@@ -119,6 +136,40 @@ def _flatten(chunk: str) -> str:
 
 
 _STUB_CHARS = 6   # 不到这个字数的独立一行，多半是被换行切碎的半句
+
+# 围栏代码块：里面有缩进、空格、成对的 ```，一旦被 max_chars 切开就废了
+_FENCE_RE = re.compile(r"```[^\n]*\n.*?```|```.*?```", re.S)
+
+
+def _split_with_code(text: str, max_chars: int, max_parts: int, min_tail: int) -> list[str]:
+    """带 ``` 的回复：代码块整块保留，绝不切、不压成一行。
+
+    实测把「```bash\\npip install -i https://pypi.tuna…\\n```\\n装完再跑」拆成
+    两条之后，空格被吃、缩进丢失、围栏只剩一半，粘到终端里直接报错。
+    """
+    parts: list[str] = []
+    pos = 0
+    for m in _FENCE_RE.finditer(text):
+        before = text[pos:m.start()]
+        if before.strip():
+            parts.extend(split_reply(before, max_chars=max_chars,
+                                     max_parts=max_parts, min_tail=min_tail))
+        parts.append(m.group(0).strip("\n"))
+        pos = m.end()
+    tail = text[pos:]
+    if tail.strip():
+        parts.extend(split_reply(tail, max_chars=max_chars,
+                                 max_parts=max_parts, min_tail=min_tail))
+    if len(parts) <= max_parts:
+        return parts
+    code = [p for p in parts if p.startswith("```")]
+    other = " ".join(p for p in parts if not p.startswith("```")).strip()
+    if not other:
+        return parts[:max_parts]
+    if len(code) + 1 <= max_parts:
+        # 先说人话，再把代码整块跟在后面
+        return [other] + code
+    return parts[:max_parts]
 
 
 def _merge_stubs(parts: list[str]) -> list[str]:
@@ -147,6 +198,9 @@ def split_reply(text: str, max_chars: int = 26, max_parts: int = 3, min_tail: in
     之前按字数合并，23 个字的两行又被拼成一句，看起来就是一长条不喘气。
     """
     text = (text or "").replace("\r", "").strip()
+    # 代码块先摘出来单独处理：它不能被换行切分，也不能被 _flatten 压成一行
+    if "```" in text:
+        return _split_with_code(text, max_chars, max_parts, min_tail)
     if "\n" in text:
         out: list[str] = []
         for line in re.split(r"\n+", text):

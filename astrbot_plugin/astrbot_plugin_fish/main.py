@@ -1710,6 +1710,11 @@ class FishPlugin(Star):
     @filter.command("tocken", alias={"token", "用量", "token用量"})
     async def cmd_tocken(self, event: AstrMessageEvent):
         """/tocken：token 用量账本。只给主人，免得群里谁都能查这只鱼的账单。"""
+        # 别名里有 "token"，私聊里「token 超了怎么办」这种正常聊天会被当成指令吃掉，
+        # 还会 stop_event 让 on_private 再也收不到。只认真·指令形态。
+        _raw = (event.message_str or "").strip()
+        if not re.match(r"^[/／]?(tocken|token|用量|token用量)(\s+文字)?$", _raw, re.I):
+            return
         try:
             owner = str(self.cfg.get("owner_qq") or "").strip()
             if not owner or str(event.get_sender_id()) != owner:
@@ -1747,7 +1752,10 @@ class FishPlugin(Star):
     async def cmd_off(self, event: AstrMessageEvent):
         gid = self._gid_of(event)
         if not gid or not gid.isdigit():
-            # 不 stop 的话，这句提示说完还会被 on_private 当闲聊再回一遍
+            # 私聊里「on my way 马上到」这种正常聊天会被短别名当指令吃掉，
+            # 以前还会 stop_event，owner 私聊从此不再回话。只有真写了 /off 才拦。
+            if not (event.message_str or "").lstrip().startswith("/"):
+                return
             event.stop_event()
             yield event.plain_result("⚠️ 静默只能在群里发")
             return
@@ -1770,6 +1778,9 @@ class FishPlugin(Star):
     async def cmd_on(self, event: AstrMessageEvent):
         gid = self._gid_of(event)
         if not gid or not gid.isdigit():
+            # 同上：私聊「on my way」不该被当指令，也不该把事件吞掉
+            if not (event.message_str or "").lstrip().startswith("/"):
+                return
             event.stop_event()
             yield event.plain_result("⚠️ 这条只能在群里发")
             return
@@ -4061,7 +4072,9 @@ class FishPlugin(Star):
         clean = _SEARCH_LEFTOVER_RE.sub("", clean or "").strip()
         # 没闭合的发图指针同样不能进群
         clean = _PIXIV_LEFTOVER_RE.sub("", clean).strip()
-        raw_text = clean or text
+        # 画图标签剥完正文就空了：正文本来该是空的，绝不能回退成「带标签的原句」——
+        # 回退之后标签会被当正文发进群（实测「[画图:喜报:今天没人迟到]」就是这么裸奔的）
+        raw_text = clean or (meme_gen.extract_tag(text)[0].strip() if draw_req else text)
         text = composer.sanitize_reply(raw_text)
         # 出口清洗：内部独白、动作旁白、Markdown 痕迹在这剥掉。
         # URL 和代码块会先变占位符再还原，联网搜到的内容不会被误删
@@ -4304,6 +4317,15 @@ class FishPlugin(Star):
         # 画图：模型写了 [画图:模板:文字] 就真画一张。画不出来就当没这个标签，
         # 正文照发——宁可少一张图，也不能因为它把整句话吞掉
         drawn_b64 = None
+        if draw_req and self.cfg.get("meme_gen_enabled", True):
+            # 画在图上的字同样是「发给群里的话」，不能绕过风控：
+            # 实测模型写过【画图：举牌：我是傻逼】这种，以前一路直通到出图
+            _draw_ok, _draw_text = safety_guard.sanitize_outgoing_text(draw_req)
+            if not _draw_ok:
+                logger.info("[fish] 画图文字命中风控，整条画图丢弃：%s", draw_req[:30])
+                draw_req = ""
+            else:
+                draw_req = _draw_text or draw_req
         if draw_req and self.cfg.get("meme_gen_enabled", True):
             drawn_b64 = await meme_gen.make(
                 draw_req, float(self.cfg.get("meme_gen_timeout_sec", 25) or 25))
