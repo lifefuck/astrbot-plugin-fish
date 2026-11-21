@@ -2112,7 +2112,12 @@ class FishPlugin(Star):
             elif kind in ("forward", "nodes", "node"):
                 fid = str(getattr(comp, "id", "") or getattr(comp, "message_id", "") or "")
                 txt = await self._forward_text(event, fid)
-                parts.append(f"【他发了一份聊天记录】{txt[:400] if txt else '（内容没取到）'}")
+                if txt:
+                    parts.append(f"【他发了一份聊天记录】{txt[:400]}")
+                else:
+                    # 内容取不到的转发别写成「（内容没取到）」：模型看见这句话会
+                    # 顺着评一句「发的什么玩意」，等于对着空白瞎评价。直接当没看见
+                    logger.info("[fish] 合并转发内容取不到（id=%s），这条不喂给模型", fid[:24])
         return "\n".join(parts)
 
     @staticmethod
@@ -2754,6 +2759,14 @@ class FishPlugin(Star):
             reason = "追问窗口"
             logger.info("[fish] 群 %s %s 在追问窗口内（剩 %d 次），直接回", gid, nick, st.follow_left)
         else:
+            # 纯图片/表情、一个字没配：图里是什么模型也只知道个大概，
+            # 主动接话十次有九次是贴一句空评价（实测「瞄谁呢，枪口别拐我这边」
+            # 「别瞄我，我什么都不知道」）。等人 @ 或者带句话再说
+            if has_image and not text and not quote_ctx:
+                logger.info("[fish] 群 %s 纯图片无配字，不主动接话", gid)
+                self.log_event("skip", gid, "[图片]", who=nick, why="纯图片·不主动评价")
+                await self._remember(gid, uid, "[图片]")
+                return
             ok, reason = self._should_interject(gid, st, text, now, has_image, has_media, uid)
             # 贴了 B 站链接/BV 号：在质量分眼里只是 12 个字符的短消息，给 0.36 就跳过了。
             # 可这是群里最明确的「给你们看个东西」，漏掉最扎眼，直接接
