@@ -80,6 +80,31 @@ def _resolve_data_dir(data_dir: Optional[str]) -> str:
     return os.path.normpath(os.path.abspath(os.path.expanduser(str(data_dir))))
 
 
+_PURE_WORD_RE = re.compile(r"[\u4e00-\u9fa5A-Za-z0-9]{2,8}")
+
+
+def _pure_words(name: str) -> List[str]:
+    """把库里的词名拆成能直接塞进自然句的纯词。
+
+    「牛头人(NTR)」→ 牛头人 / NTR；「老登/小登」→ 老登 / 小登；
+    「CPU/KTV」→ CPU / KTV。以前整条正则过筛，这类词永远进不了提示词。
+    """
+    out: List[str] = []
+    if not name:
+        return out
+    for part in re.split(r"[/／|｜]", re.sub(r"[（(][^）)]*[）)]", " ", name)):
+        part = part.strip(" ·-—_")
+        if not part:
+            continue
+        if _PURE_WORD_RE.fullmatch(part):
+            out.append(part)
+        else:
+            # 带空格/符号的复合词，取里面最长的纯片段
+            cand = [c for c in re.findall(r"[\u4e00-\u9fa5A-Za-z0-9]+", part) if 2 <= len(c) <= 8]
+            out.extend(cand[:1])
+    return out
+
+
 def _safe_meme(name: str, desc: str = "") -> bool:
     """push 时的兜底校验：太短/太长/纯符号/带风控词的一律不进池"""
     text = f"{name} {desc}"
@@ -130,6 +155,9 @@ class MemeManager:
         self._round = 0
         self._last_round: Dict[str, int] = {}
         self._recent_rounds: collections.deque = collections.deque(maxlen=10)
+        # 发牌堆：每个类目一叠，抽空才重洗。随机抽的实测后果是有的词连着几十轮
+        # 进不了池（4 天只覆盖到词库的 1/4），而它们本该是「最近常刷到的词」
+        self._decks: Dict[str, List[str]] = {}
 
         self.data_dir = _resolve_data_dir(data_dir)
         self._refresh_paths()
@@ -274,6 +302,7 @@ class MemeManager:
             self._rebuild_index()
             # 词库整体换了，冷却表一起清掉，否则新词会被旧轮次卡住
             self._last_round.clear()
+            self._decks.clear()
             self.rotate_pool(force=True)
             logger.info(
                 "已载入热梗词库 %s：总词数 %d（带释义 %d / 纯热词 %d），核心梗 %d，当前轮换池 %d",
@@ -322,6 +351,30 @@ class MemeManager:
             return []
         return random.sample(items, min(n, len(items)))
 
+    def _draw(self, deck_key: str, items: List[Dict[str, Any]], n: int) -> List[Dict[str, Any]]:
+        """从发牌堆抽 n 条：抽空了才重洗，保证每 ⌈库/池⌉ 轮把库轮一遍。
+
+        为什么不用 random.sample：随机会有长尾——实测 4 天里有一批词一次都没进过池，
+        而「最近常刷到的词」这层的意义就在于覆盖面，抽不到等于没有。
+        """
+        if n <= 0 or not items:
+            return []
+        by_name = {m["name"]: m for m in items}
+        deck = [x for x in self._decks.get(deck_key, []) if x in by_name]
+        out: List[Dict[str, Any]] = []
+        guard = 0
+        while len(out) < n and guard < n + len(items) + 8:
+            guard += 1
+            if not deck:
+                deck = list(by_name)
+                random.shuffle(deck)
+            name = deck.pop()
+            if any(o["name"] == name for o in out):
+                continue
+            out.append(by_name[name])
+        self._decks[deck_key] = deck
+        return out
+
     def rotate_pool(self, force: bool = False) -> List[Dict[str, Any]]:
         """按圈子配比洗牌出一批词；冷却期内的词优先排除，凑不够才降级回全量"""
         now = time.time()
@@ -342,9 +395,9 @@ class MemeManager:
         seen: set = set()
         for cat, count in counts:
             pool = [m for m in self.category_pools.get(cat, []) if m["name"] not in seen]
-            picked = self._sample(self._eligible(pool), count)
+            picked = self._draw(cat, pool, count)
             if len(picked) < count:
-                # 冷库不够就放宽冷却，但绝不重复已选中的
+                # 该类目库不够就放宽，但绝不重复已选中的
                 rest = [m for m in pool if m not in picked]
                 picked.extend(self._sample(rest, count - len(picked)))
             for item in picked:
@@ -355,7 +408,7 @@ class MemeManager:
         if len(selected) < target_total:
             need = target_total - len(selected)
             rest = [m for m in self.structured_memes if m["name"] not in seen]
-            for item in (self._sample(self._eligible(rest), need) or self._sample(rest, need)):
+            for item in (self._draw("__rest__", rest, need) or self._sample(rest, need)):
                 seen.add(item["name"])
                 selected.append(item)
         if len(selected) < target_total and self.word_only_memes:
@@ -559,12 +612,20 @@ class MemeManager:
 
         self._snippet_calls += 1
         if self.current_pool and (hits or self._snippet_calls % 5 == 1):
-            words = [
-                str(i.get("name") or "") for i in self.current_pool
-                if str(i.get("name") or "") not in rendered_core
-                # 带斜杠/括号的词（CPU/KTV、牛头人(NTR)）在自然句里接不上，只放纯词
-                and re.fullmatch(r"[\u4e00-\u9fa5A-Za-z0-9]{2,8}", str(i.get("name") or ""))
-            ][:30]
+            # 带斜杠/括号的词（CPU/KTV、牛头人(NTR)）直接过筛会被整条丢掉，
+            # 于是「老登/小登」这种常用说法一次都没进过提示词。拆成分词再试
+            words: List[str] = []
+            for it in self.current_pool:
+                raw = str(it.get("name") or "")
+                if raw in rendered_core:
+                    continue
+                for w in _pure_words(raw):
+                    if w not in words:
+                        words.append(w)
+                    if len(words) >= 30:
+                        break
+                if len(words) >= 30:
+                    break
             if words:
                 lines.append("【最近常刷到的词】：" + "、".join(words))
         return "\n".join(lines)
