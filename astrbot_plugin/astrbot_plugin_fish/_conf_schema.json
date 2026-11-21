@@ -711,5 +711,29 @@
     "type": "int",
     "default": 3,
     "hint": "一次无差别攻击最多 @ 的人数。"
+  },
+  "speak_decision_shadow": {
+    "description": "开口判定影子模式",
+    "type": "bool",
+    "default": false,
+    "hint": "打开后每条消息都会用 fish_core.speak_decision 重新判一次，只写日志不改行为，用来灰度对比新旧判定。"
+  },
+  "speak_decision_shadow_groups": {
+    "description": "影子模式灰度群",
+    "type": "list",
+    "default": [],
+    "hint": "只对这些群号记影子日志；留空=所有群。"
+  },
+  "cooldown_sec": {
+    "description": "被叫后的最短回复间隔(秒)",
+    "type": "int",
+    "default": 5,
+    "hint": "被@/被骂/唤醒也要过这条冷却，只是比追问窗口的更短。"
+  },
+  "judge_broken_policy": {
+    "description": "判官不可用时的策略",
+    "type": "string",
+    "default": "skip",
+    "hint": "skip=不接（默认，没有依据就别乱说）；reply=照常接。"
   }
 }

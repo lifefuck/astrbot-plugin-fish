@@ -2316,6 +2316,62 @@ class FishPlugin(Star):
             return "ok"
         return "fail" if hit["v"] else "notfound"
 
+    @filter.event_message_type(EventMessageType.ALL)
+    @_handler_guard
+    async def on_at_only(self, event: AstrMessageEvent):
+        """纯 @ 无文字的兜底入口。
+
+        实测：群里发一条只有 @、没有文字的群消息，on_group 根本不触发
+        （journal 里没有任何 [fish] 行，回话来自 AstrBot 原生流程）。
+        后果不只是绕过开口判定：不记时间线、不记 turn log、不受密度闸和冷却约束。
+
+        这里用 ALL 类型的独立入口接住它，再交给 on_group 走同一套流程：
+        收消息 → 记时间线 → decide() 判定 → 该说才调模型。
+        只要文本非空就不插手（避免和 on_group 抢同一条消息）。
+        """
+        if not self.cfg.get("enabled", True):
+            return
+        try:
+            segs = list(getattr(event.message_obj, "message", []) or [])
+            if not segs:
+                return
+            if any(type(c).__name__ in ("Poke", "Video", "File") for c in segs):
+                return
+            self_id = str(event.get_self_id())
+            has_at_me = any(
+                type(c).__name__ in ("At", "AtAll")
+                and str(getattr(c, "qq", "")) in (self_id, "all")
+                for c in segs
+            )
+            if not has_at_me:
+                return
+            if (event.message_str or "").strip():
+                return
+            logger.info("[fish] 纯@无文字消息进入兜底入口：%s <- %s",
+                        event.get_group_id() or "private", event.get_sender_id())
+            async for r in self.on_group(event):
+                yield r
+        except Exception as e:
+            logger.error("[fish] on_at_only 异常：%s: %s", type(e).__name__, e)
+
+    def _sd_signals(self, gid, st, now, **kw):
+        """把群状态摊成 Signals。裸 @ 和主路径共用，避免两处各写一套字段。"""
+        from .fish_core import speak_decision as _sd
+        base = dict(
+            group_id=str(gid), now=now,
+            pending_interject_ts=float(getattr(st, "pending_interject_ts", 0.0) or 0.0),
+            unanswered_interjects=int(getattr(st, "unanswered_interjects", 0) or 0),
+            silent_until=float(getattr(st, "silent_until", 0.0) or 0.0),
+            last_bot_reply_ts=float(getattr(st, "last_bot_reply_ts", 0.0) or 0.0),
+            last_interject_ts=float(getattr(st, "last_interject_ts", 0.0) or 0.0),
+            interject_times=tuple(getattr(st, "interject_times", ()) or ()),
+            is_follow=bool(getattr(st, "follow_left", 0)),
+            followed_left_hint=0,
+        )
+        base.pop("followed_left_hint", None)
+        base.update(kw)
+        return _sd.Signals(**base)
+
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     @_handler_guard
     async def on_group(self, event: AstrMessageEvent):
@@ -2565,11 +2621,26 @@ class FishPlugin(Star):
 
         if not text and not has_image and not recs and not quote_ctx:
             if is_at:
-                # 只是 @ 一下没说话：为一句「？」烧一次模型不值，模型还容易顺着空白
-                # 编出一段客服腔。本地应一声就够，顺手把框架拦住别让它抢答
-                if now - st.last_bare_at_ts > 45:
-                    st.last_bare_at_ts = now
-                    yield event.plain_result(random.choice(["？", "咋了", "在呢", "你说"]))
+                # 只是 @ 一下没说话。以前这里直接本地应一声就 return，
+                # 判定对象永远看不到这条路——「任何路径都要过开口判定」的第一个漏洞就是它。
+                # 现在先判：说不说归 decide()，说什么降级成本地应声（为一句「？」烧模型不值，
+                # 模型还会顺着空白编出客服腔）。
+                from .fish_core import speak_decision as _sd
+                _replied = (now - float(st.last_bare_at_ts or 0)) <= 45
+                _bare_sig = self._sd_signals(
+                    gid, st, now, is_at=True, empty=True, uid=str(uid), nick=nick,
+                    text="<裸@>", replied_recently=_replied,
+                )
+                _bare_dec = _sd.decide(_bare_sig, self.cfg)
+                logger.info("[fish][sd] 群 %s 裸@ %s", gid, _bare_dec.log_line())
+                if not _bare_dec.speak:
+                    logger.info("[fish] 群 %s 裸@不接（%s）", gid, _bare_dec.reason)
+                    self.log_event("skip", gid, "<裸@>", who=nick, why=_bare_dec.reason)
+                    await self._remember(gid, uid, "")
+                    event.stop_event()
+                    return
+                st.last_bare_at_ts = now
+                yield event.plain_result(random.choice(["？", "咋了", "在呢", "你说"]))
                 event.stop_event()
                 return
             # 纯语音/表情/卡片：不接，但别 stop——语音转文字之类的插件还要处理这条
@@ -2781,79 +2852,61 @@ class FishPlugin(Star):
                 await self._remember(gid, uid, text)
                 return
 
-        # ---------------- 该不该开口 ----------------
-        if is_at or forced:
-            reason = "被@" if is_at else ("有人骂到头上" if quarrel_force else "手打前缀")
-            if not self.cfg.get("reply_when_at", True):
-                await self._remember(gid, uid, text)
+        # ---------------- 开口判定（唯一入口） ----------------
+        # 这里以前是一串 if：被 @ 一条、手打前缀一条、追问窗口一条、主动插话一条，
+        # 各自判各自的密度和冷却，改一处漏三处。现在只剩下一个 decide()：
+        # @ / 唤醒 / 被骂 / 追问 / 主动插话都只是输入信号（优先级），
+        # 密度、冷却、配额、判官、冷场退避全部由对象统一算，任何路径都不许绕过。
+        from .fish_core import speak_decision as _sd
+
+        _link = bool(_URL_RE.search(text or ""))
+        # 旁观态打分器只做「质量分 + 按人冷却 + 小时配额 + 复读」这几个信号，
+        # 结论塞进 decide() 由它统一裁决（不再由它自己决定说不说）
+        _gate = ""
+        _ambient = not (is_at or forced or is_follow)
+        if _ambient:
+            _q_ok, _q_why = self._should_interject(gid, st, text, now, has_image, has_media, uid)
+            if not _q_ok:
+                _gate = _q_why
+        _cap_win = float(self.cfg.get("follow_reply_window_sec", 180) or 180)
+        _recent_replies = len([t for t in st.reply_times if now - t <= _cap_win])
+        _sig = _sd.Signals(
+            group_id=str(gid), uid=str(uid), nick=nick, text=text or "", now=now,
+            is_at=bool(is_at), is_wake=bool(forced),
+            # 被骂必须有指向证据才算数，无证据会被模块降级成普通消息
+            abused=bool(quarrel_force), abuse_evidence="被点名骂" if quarrel_force else "",
+            is_follow=bool(is_follow), follow_left=int(getattr(st, "follow_left", 0) or 0),
+            pending_interject_ts=float(getattr(st, "pending_interject_ts", 0.0) or 0.0),
+            unanswered_interjects=int(getattr(st, "unanswered_interjects", 0) or 0),
+            silent_until=float(getattr(st, "silent_until", 0.0) or 0.0),
+            last_bot_reply_ts=float(getattr(st, "last_bot_reply_ts", 0.0) or 0.0),
+            last_interject_ts=float(getattr(st, "last_interject_ts", 0.0) or 0.0),
+            interject_times=tuple(getattr(st, "interject_times", ()) or ()),
+            recent_replies=_recent_replies,
+            has_image=bool(has_image), has_media=bool(has_media),
+            has_forward=bool(_has_forward), is_link=_link,
+            empty=not (text or "").strip(),
+            # 分数只作记录与门槛参考：门槛由打分器按群意愿算过，这里不再重判一次
+            judge_score=(getattr(self, "_last_quality", None) if _ambient else None),
+            judge_threshold=0.0,
+            ambient_gate_blocked=_gate,
+            # 指向：旧代码用 _talk_to_other 一句话了事，现在作为信号进对象
+            target_uid=("someone_else" if _talk_to_other else ""),
+            address_evidence=("@别人" if _talk_to_other else ""),
+            muted=bool((is_at or forced) and not self.cfg.get("reply_when_at", True)),
+            banned=bool(getattr(st, "banned", False)),
+        )
+        _dec = _sd.decide(_sig, self.cfg)
+        logger.info("[fish][sd] 群 %s %s", gid, _dec.log_line())
+        if not _dec.speak:
+            logger.info("[fish] 群 %s 不接（%s）：%s", gid, _dec.reason, (text or "")[:30])
+            self.log_event("skip", gid, (text or "")[:60], who=nick, why=_dec.reason)
+            await self._remember(gid, uid, text)
+            # /off 之后被 @ 也不该让原生流程接手，这里照旧收口
+            if _dec.reason.startswith("已 /off"):
                 event.stop_event()
-                return
-        elif is_follow:
-            # 追问窗口不是「每句必回」的通行证。实测一个人 7 分钟换来 18 条回复：
-            # 他发文字我回、发图我回、发个「好了」我还回，比他自己说话还密，
-            # 群里看着就是黏人又犯蠢。留个最小间隔，够他把一句说完
-            _gap = float(self.cfg.get("follow_min_gap_sec", 8) or 0)
-            if _gap and now - st.last_bot_reply_ts < _gap:
-                logger.info("[fish] 群 %s %s 在追问窗口内，但 %.1fs 前刚回过，这轮先不说",
-                            gid, nick, now - st.last_bot_reply_ts)
-                self.log_event("skip", gid, text[:60], who=nick, why="追问窗口·刚回过")
-                await self._remember(gid, uid, text)
-                return
-            # 追问窗口不是免死金牌。实测两个人聊旧事，鱼 2 分钟插了 4 条，
-            # 群里就是一串黏人的碎嘴；窗口期内自己说的话也得计入总密度
-            _cap = int(self.cfg.get("follow_reply_cap", 3) or 0)
-            _cap_win = float(self.cfg.get("follow_reply_window_sec", 180) or 180)
-            if _cap:
-                _recent = [t for t in st.reply_times if now - t <= _cap_win]
-                if len(_recent) >= _cap:
-                    logger.info("[fish] 群 %s %d 秒内已经说了 %d 条，追问窗口这轮也先不说",
-                                gid, int(_cap_win), len(_recent))
-                    self.log_event("skip", gid, text[:60], who=nick, why="追问窗口·说太密")
-                    await self._remember(gid, uid, text)
-                    return
-            reason = "追问窗口"
-            logger.info("[fish] 群 %s %s 在追问窗口内（剩 %d 次），直接回", gid, nick, st.follow_left)
-        else:
-            # 纯图片/表情、一个字没配：图里是什么模型也只知道个大概，
-            # 主动接话十次有九次是贴一句空评价（实测「瞄谁呢，枪口别拐我这边」
-            # 「别瞄我，我什么都不知道」）。等人 @ 或者带句话再说
-            if has_image and not text and not quote_ctx:
-                logger.info("[fish] 群 %s 纯图片无配字，不主动接话", gid)
-                self.log_event("skip", gid, "[图片]", who=nick, why="纯图片·不主动评价")
-                await self._remember(gid, uid, "[图片]")
-                return
-            # 转发同理：转述里的东西大概率读不懂，主动评就是「啥玩意」
-            # 「这养的啥我看不出来」。带了一句话再算它想说事
-            if _has_forward and not text:
-                logger.info("[fish] 群 %s 有人转发、没人叫，不主动接", gid)
-                self.log_event("skip", gid, "[转发]", who=nick, why="转发·不主动评价")
-                await self._remember(gid, uid, "[转发]")
-                return
-            # 冷场退避：连着两次主动插话没人接就撤退，这段时间只回指名/追问。
-            # 群里最刺眼的就是两三个人自顾自聊，机器人还一句一句往上凑
-            if now < float(st.silent_until or 0):
-                logger.info("[fish] 群 %s 冷场退避中（还剩 %.0fs），不主动接：%s",
-                            gid, st.silent_until - now, text[:24])
-                self.log_event("skip", gid, text[:60], who=nick, why="冷场退避")
-                await self._remember(gid, uid, text)
-                return
-            ok, reason = self._should_interject(gid, st, text, now, has_image, has_media, uid)
-            # 贴了 B 站链接/BV 号：在质量分眼里只是 12 个字符的短消息，给 0.36 就跳过了。
-            # 可这是群里最明确的「给你们看个东西」，漏掉最扎眼，直接接
-            _is_link = bool(_URL_RE.search(text))
-            if not ok and _is_link:
-                ok, reason = True, "贴了B站视频"
-            if ok and _talk_to_other:
-                ok, reason = False, "说的是别人"
-            if ok and not _is_link and self._density_blocked(st, now):
-                # 被点名和追问窗口不受这个闸限制，主动搭腔才受限制
-                ok, reason = False, "两分钟内已经主动说过两条"
-            if not ok:
-                # 不接话也要做自动感知（原项目对每条群消息都记，不只记回过的）
-                logger.info("[fish] 群 %s 不接（%s）：%s", gid, reason, text[:30])
-                self.log_event("skip", gid, text[:60], who=nick, why=reason)
-                await self._remember(gid, uid, text)
-                return
+            return
+        reason = _dec.reason
 
         # 到这儿这条已经确定要回：先开追问窗口，再占住冷却位。
         # 窗口在这里开（而不是在收到 @ 时开）——没回出去的 @ 不该换来后续免@ 特权。
@@ -3440,6 +3493,34 @@ class FishPlugin(Star):
         t = text or ""
         return any(k in t for k in ("小鲸鱼", "鲸宝", "大肥鱼", "肥鱼", "傻鱼", "鲸娘", "鱼娘", "笨鱼"))
 
+    def _sd_shadow(self, gid, st, sig_kw, old_ok, old_reason):
+        """开口判定对象（speak_decision）的影子比对：只记录，不改行为。
+
+        灰度期靠这条日志判断「新判定会不会把该说的吞掉、把不该说的放出来」，
+        对比完再切 enforce。任何异常都吞掉——影子日志绝不能影响线上回话。
+        """
+        if not self.cfg.get("speak_decision_shadow", False):
+            return
+        gs = self.cfg.get("speak_decision_shadow_groups") or []
+        if gs and str(gid) not in [str(x) for x in gs]:
+            return
+        import time as _t
+        from .fish_core import speak_decision as _sd
+        kw = dict(sig_kw)
+        kw.setdefault("now", _t.time())
+        kw.setdefault("group_id", str(gid))
+        kw["interject_times"] = tuple(getattr(st, "interject_times", ()) or ())
+        kw["pending_interject_ts"] = float(getattr(st, "pending_interject_ts", 0.0) or 0.0)
+        kw["unanswered_interjects"] = int(getattr(st, "unanswered_interjects", 0) or 0)
+        kw["silent_until"] = float(getattr(st, "silent_until", 0.0) or 0.0)
+        kw["last_bot_reply_ts"] = float(getattr(st, "last_bot_reply_ts", 0.0) or 0.0)
+        d = _sd.decide(_sd.Signals(**kw), self.cfg)
+        if old_ok is None:
+            logger.info("[fish][sd] 群 %s 新判定 %s", gid, d.log_line())
+        else:
+            logger.info("[fish][sd] 群 %s 旧=%s/%s 新=%s %s", gid, old_ok, old_reason,
+                        d.log_line(), "一致" if bool(old_ok) == bool(d.speak) else "不一致")
+
     def _should_interject(self, gid, st, text, now, has_image, has_media, uid: str = "") -> tuple[bool, str]:
         """旁观态接话闸门：质量分 × 时机修正 vs 意愿门槛。"""
         # adjust() 的「刚说过就 ×0.55」读的是模块里的 COOLDOWN_SEC，不是参数，
@@ -3495,6 +3576,9 @@ class FishPlugin(Star):
         desire = float(self.cfg.get("interject_desire", 0.30) if ov_desire is None else ov_desire)
         threshold = interject_score.interject_threshold(desire)
         passed = score >= threshold
+        # 影子比对要的就是这个分：判定对象按「没分就不主动插话」处理，
+        # 少这一行会把所有主动插话都记成「没质量分」，灰度对比全是噪声
+        self._last_quality = float(score)
         # 注意不在这里记 quota：判定通过不代表真发得出去（social_read 可能改判、
         # 生成可能失败）。真正的计数在 on_decorate 发出去那一刻
         logger.info(
