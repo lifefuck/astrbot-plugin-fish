@@ -31,6 +31,10 @@
 | `split_gap_min` | `0.6` | 拆条最小间隔（秒） |
 | `split_gap_max` | `1.5` | 拆条最大间隔（秒） |
 | `vision_enabled` | `true` | 群里发图时让 Gemini 看一眼。只在决定要回的时候才识图，不会为每张图烧配额。识图失败静默降级成纯文字。 |
+| `vision_wb_enable` | `true` | 识图先走 WB 池（本地 3425 网关）。Gemini 常年限流，群里发图就瞎。WB 池实测 2.6~4.3s 出描述、连打 6 发不限流，所以放第一位，Gemini 只当兜底。 |
+| `vision_wb_base` | `http://127.0.0.1:3425/v1` | WB 网关地址 |
+| `vision_wb_key` | - | WB 网关密钥（本地网关留空即可） |
+| `vision_wb_models` | `["wb/glm-5v-turbo", "wb/minimax-m3.1-flash"]` | WB 识图模型顺序。glm-5v-turbo 是视觉专用模型，2.8s 出描述、读数字最准；minimax-m3.1-flash 同延迟兜底。别用 glm-5.1/5.2/5.3，会把 7392 念成 7.392。 |
 | `vision_model` | `gemini-3.5-flash-lite` | 视觉主模型。默认 lite：实测 1~2 秒就能把图里的字逐字抄准；gemini-3.8-flash 在这台机器上常 25 秒超时，不适合群聊实时场景。 |
 | `vision_fallback_models` | `["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]` | 视觉降级模型。只放 lite 系：实测 3.5/3.1-flash-lite、flash-lite-latest 都在 1~3 秒出描述；3.6/3.8-flash 同样一张图要 14~21 秒，配 12 秒总预算等于永远轮不上。 |
 | `vision_max_images` | `2` | 单条消息最多看几张图 |
@@ -94,6 +98,9 @@
 | `hearing_prompt` | - | 转写提示词（留空用内置） |
 | `meme_gen_enabled` | `true` | 自己画带字的表情包（[画图:模板:文字]） |
 | `meme_gen_timeout_sec` | `25` | 单张画图超时（秒） |
+| `pixiv_enabled` | `true` | 按标签发图（模型写 [看图:标签] 时去 pixiv 捞一张，只发全年龄） |
+| `pixiv_cookie` | - | Pixiv Cookie（留空则自动借用流媒体解析插件里的那份）。需要包含 PHPSESSID；不填也能搜，但拿不到原图 |
+| `pixiv_proxy` | `http://127.0.0.1:7890` | Pixiv 走哪个代理（国内必须） |
 | `patrol_judge_gap_sec` | `45` | 同一群两次巡检判定的最小间隔（秒），防刷屏时疯狂调模型 |
 | `patrol_judge_timeout_sec` | `12` | 巡检判定单次超时（秒） |
 | `tattle_intent_timeout_sec` | `10` | 「是不是在让我去告状」判定超时（秒） |
@@ -107,3 +114,7 @@
 | `insult_actions_enabled` | `true` | 让鱼去骂人。群友说「骂一下谁」「群嘲」时真的 @ 到人头上；不骂群管和主人。 |
 | `insult_cooldown_sec` | `60` | 骂人间隔（秒）。同一个群两次执行的最小间隔，防止有人拿它刷屏。 |
 | `insult_max_targets` | `3` | 群嘲最多点几个人。一次无差别攻击最多 @ 的人数。 |
+| `speak_decision_shadow` | `false` | 开口判定影子模式。打开后每条消息都会用 fish_core.speak_decision 重新判一次，只写日志不改行为，用来灰度对比新旧判定。 |
+| `speak_decision_shadow_groups` | `[]` | 影子模式灰度群。只对这些群号记影子日志；留空=所有群。 |
+| `cooldown_sec` | `5` | 被叫后的最短回复间隔(秒)。被@/被骂/唤醒也要过这条冷却，只是比追问窗口的更短。 |
+| `judge_broken_policy` | `skip` | 判官不可用时的策略。skip=不接（默认，没有依据就别乱说）；reply=照常接。 |
