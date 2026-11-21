@@ -1905,6 +1905,68 @@ class FishPlugin(Star):
     _QUOTE_PLACEHOLDERS = ("[图片]", "[聊天记录]", "[转发消息]", "[语音]", "[视频]",
                            "[文件]", "[动画表情]", "[表情]")
 
+    async def _quote_audio_desc(self, event, seg_data: dict | None = None,
+                                comp=None) -> str:
+        """引用的那段语音听一下，返回转写文字（可能为空）。
+
+        坑一：语音段里的 file 往往只是文件名，真正能取的是 url；NapCat 有时连 url
+        都不给，那就走 get_record 让它按 mp3 导出——但导出的是容器上的本地路径，
+        我们在另一台机器上读不到，只认它回的 url。
+        坑二：silk/amr ffmpeg 不认 silk，所以优先要 mp3 导出。
+        """
+        if not self.cfg.get("hearing_enabled", True):
+            return ""
+        cands: list[str] = []
+        for src in ((seg_data or {}).get("url"), (seg_data or {}).get("file"),
+                    getattr(comp, "url", None), getattr(comp, "file", None),
+                    getattr(comp, "path", None)):
+            s = str(src or "").strip()
+            if s and s not in cands:
+                cands.append(s)
+        deadline = time.time() + float(self.cfg.get("hearing_timeout_sec", 30) or 30)
+        raw = b""
+        for s in cands:
+            if s.lower().startswith(("http://", "https://")):
+                raw = await vision.download_audio(s, logger=logger)
+            elif s.startswith("/") and os.path.isfile(s):
+                # 框架自己下到 data/temp 的那种，直接读
+                try:
+                    with open(s, "rb") as f:
+                        raw = f.read(16 * 1024 * 1024)
+                except Exception:
+                    raw = b""
+            if raw:
+                break
+        if not raw:
+            # 兜底：让 NapCat 转成 mp3 再给个能取的地址
+            try:
+                fid = str((seg_data or {}).get("file") or getattr(comp, "file", "") or "")
+                if fid:
+                    res = await asyncio.wait_for(
+                        event.bot.call_action("get_record", file=fid, out_format="mp3"), 8)
+                    got = ((res or {}).get("data") or {})
+                    url2 = str(got.get("url") or got.get("file") or "")
+                    if url2.lower().startswith(("http://", "https://")):
+                        raw = await vision.download_audio(url2, logger=logger)
+                    elif url2.startswith("/") and os.path.isfile(url2):
+                        with open(url2, "rb") as f:
+                            raw = f.read(16 * 1024 * 1024)
+            except Exception as e:
+                logger.info("[fish] get_record 兜底失败：%s: %s", type(e).__name__, str(e)[:60])
+        if not raw:
+            logger.info("[fish] 引用的语音取不到内容，当没听见")
+            return ""
+        # 转写复用 hearing.py：silk 解码 + ffmpeg 转码 + Gemini 直连都在那儿，
+        # 别为「引用的语音」再养一条并行的转写链
+        try:
+            text = await asyncio.wait_for(
+                hearing.transcribe(raw, self.cfg, logger=logger),
+                max(3.0, deadline - time.time()))
+        except Exception as e:
+            logger.info("[fish] 引用语音转写失败：%s: %s", type(e).__name__, str(e)[:60])
+            return ""
+        return (text or "").strip()
+
     async def _quote_image_desc(self, url: str) -> str:
         """引用的那张图自己看一眼。缩图 + 走 WB 识图链，1~4 秒。"""
         if not url or not self.cfg.get("vision_enabled", True):
@@ -1965,10 +2027,11 @@ class FishPlugin(Star):
         return txt
 
     async def _quote_detail(self, event, comp) -> str:
-        """引用内容为空或只是占位符时，回查被引用的那条消息：文本 / 图片 / 合并转发。"""
+        """引用内容为空或只是占位符时，回查被引用的那条消息：文本 / 图片 / 语音 / 合并转发。"""
         mid = str(getattr(comp, "id", "") or "")
         texts: list[str] = []
         imgs: list[str] = []
+        audios: list[tuple[dict, object]] = []
         for c in (getattr(comp, "chain", None) or []):
             n = type(c).__name__.lower()
             if n in ("plain", "text"):
@@ -1977,11 +2040,13 @@ class FishPlugin(Star):
                 u = str(getattr(c, "url", "") or getattr(c, "file", "") or "")
                 if u:
                     imgs.append(u)
+            elif n in ("record", "voice", "audio"):
+                audios.append(({}, c))
             elif n in ("forward", "node", "nodes"):
                 t = await self._forward_text(event, str(getattr(c, "id", "") or ""))
                 if t:
                     texts.append(t)
-        if not texts and not imgs and mid:
+        if not texts and not imgs and not audios and mid:
             try:
                 res = await asyncio.wait_for(event.bot.call_action("get_msg", message_id=mid), 6)
                 segs = ((res or {}).get("data") or {}).get("message") or []
@@ -1996,6 +2061,8 @@ class FishPlugin(Star):
                         u = str(d.get("url") or d.get("file") or "")
                         if u:
                             imgs.append(u)
+                    elif st == "record":
+                        audios.append((d, None))
                     elif st in ("forward", "node", "nodes"):
                         t = await self._forward_text(event, str(d.get("id") or ""))
                         if t:
@@ -2007,6 +2074,13 @@ class FishPlugin(Star):
             desc = await self._quote_image_desc(imgs[0])
             out = (out + " " if out else "") + (
                 f"（引用的图：{desc}）" if desc else "（引用了一张图，没看清内容）")
+        if audios:
+            seg_data, comp_obj = audios[0]
+            heard = await self._quote_audio_desc(event, seg_data=seg_data, comp=comp_obj)
+            # 「仅供参考」是硬要求：转写错字不少，模型别把它当原话复述
+            out = (out + " " if out else "") + (
+                f"（引用的语音，转写仅供参考、可能有错字：{heard}）" if heard
+                else "（引用了一段语音，没听清）")
         return out
 
     async def _quote_context(self, event) -> str:

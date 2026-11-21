@@ -10,6 +10,7 @@
 import asyncio
 import base64
 import io
+import re
 import subprocess
 
 # 语音本身很小，但有人会发超长录音。超过这个体积直接放弃，不为一条语音卡住整条回复
@@ -24,6 +25,9 @@ DEFAULT_PROMPT = (
 )
 
 _vision = None
+
+# Gemini 转中文会逐字带空格，汉字/CJK 标点之间的一律压掉
+_CJK_GAP_RE = re.compile(r"(?<=[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef])\s+(?=[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef])")
 
 
 def configure(vision_module) -> None:
@@ -111,6 +115,11 @@ async def transcribe(raw: bytes, cfg: dict, logger=None) -> str:
         return ""
 
     text = (text or "").strip().strip("「」\"'")
+    # Gemini 转中文时常逐字带空格（「生 贷 转 两 百」），汉字之间的一律压掉：
+    # 这些空格既占 token，也会被模型当成生硬断句
+    if text:
+        text = _CJK_GAP_RE.sub("", text)
+        text = re.sub(r"[ \t]{2,}", " ", text).strip()
     if text in ("听不清", "无法识别", "空"):
         return ""
     return text[:MAX_TEXT_CHARS]

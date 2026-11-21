@@ -764,3 +764,47 @@ async def from_components(components: list, cfg: dict, logger=None) -> str:
     # 和 describe() 走同一套清洗：实测同一份脏输入，describe 返 ''，
     # from_components 原样返回「…This is a template」这种提示词残留，直接进了提示词
     return _clean_desc(await _describe_raw(raws, cfg, logger=logger))
+
+
+# ==================== 语音转写 ====================
+# WB 池里没有任何专用 ASR（whisper / paraformer / sensevoice 一个都没有），
+# 79 个模型里只有 Gemini 系接受 input_audio 段，wb/* 直接 400 报
+# 「unsupported content type at index 1: input_audio」——所以转写照旧走 hearing.py
+# 那条 Gemini 直连链路，这里只负责把语音字节拉下来。
+
+MAX_AUDIO_BYTES = 8 * 1024 * 1024
+
+
+async def download_audio(url: str, *, logger=None, timeout: float = 12.0,
+                         limit: int = MAX_AUDIO_BYTES) -> bytes:
+    """下载语音直链。和 _download_image 一样过 SSRF 闸和体积闸，失败返回空字节。
+
+    语音 Content-Type 常是 application/octet-stream 或干脆不给，只有明确是
+    网页/JSON 时才判失败——否则 QQ 那些直链会被误杀。
+    """
+    if not url or not url.lower().startswith(("http://", "https://")):
+        return b""
+    ok, why = await _url_is_public(url)
+    if not ok:
+        if logger:
+            logger.warning("[fish] 拉语音被 SSRF 闸拦下（%s）：%s", why, url[:120])
+        return b""
+    session = _get_session()
+    try:
+        async with session.get(url, headers={"User-Agent": _UA},
+                               timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+            if resp.status != 200:
+                if logger:
+                    logger.warning("[fish] 拉语音 HTTP %s：%s", resp.status, url[:120])
+                return b""
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if ctype.startswith(("text/", "application/json")):
+                if logger:
+                    logger.warning("[fish] 拉语音拿到网页而不是音频（%s）：%s",
+                                   ctype.split(";")[0], url[:120])
+                return b""
+            return await _read_capped(resp, limit)
+    except Exception as e:
+        if logger:
+            logger.warning("[fish] 拉语音失败 %s: %s：%s", type(e).__name__, str(e)[:80], url[:120])
+        return b""
