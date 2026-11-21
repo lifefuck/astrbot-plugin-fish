@@ -675,6 +675,11 @@ class GroupState:
     # 「这是在跟别人说」的延续：某人 @ 了别人，紧接着那句没 @ 的也还是冲对方说的。
     # uid -> 最近一次 @ 别人的时间戳
     other_dir: dict = field(default_factory=dict)
+    # 冷场退避：主动插话之后没人搭理（没人 @、没叫名字、没顺着它说），
+    # 连着两次就闭嘴一段时间——群里最烦的就是没人问它、它还一句一句往外倒
+    pending_interject_ts: float = 0.0
+    unanswered_interjects: int = 0
+    silent_until: float = 0.0
 
     # 戳一戳连击：同一个人一分钟内反复戳，得知道这是第几下，
     # 否则每戳一次都当「第一次被戳」来写，十下就是十句同款抱怨
@@ -2651,6 +2656,20 @@ class FishPlugin(Star):
             # 90 秒内且这中间我没插过话 = 还在跟对方聊，不该轮到我
             if _other_ts and now - _other_ts < 90 and st.last_bot_reply_ts < _other_ts:
                 _talk_to_other = True
+
+        # 结算上一次「主动插话有没有人搭理」：有人 @ 它、叫它名字，就是接上了；
+        # 90 秒过完还是没人理，计一次冷场，连着两次就撤退一段时间
+        if bool(is_at) or self._addressed_to_me(text):
+            st.pending_interject_ts = 0.0
+            st.unanswered_interjects = 0
+            st.silent_until = 0.0
+        elif st.pending_interject_ts and now - st.pending_interject_ts > 90:
+            st.pending_interject_ts = 0.0
+            st.unanswered_interjects += 1
+            if st.unanswered_interjects >= int(self.cfg.get("cold_shoulder_strikes", 2) or 2):
+                st.silent_until = now + float(self.cfg.get("cold_shoulder_sec", 600) or 600)
+                logger.info("[fish] 群 %s 连续 %d 次插话没人接，安静 %d 秒",
+                            gid, st.unanswered_interjects, int(st.silent_until - now))
         if (not (is_at or forced) and not _talk_to_other and self.cfg.get("reply_when_at", True)
                 and uid == st.follow_uid and now < st.follow_until):
             if st.follow_left > 0:
@@ -2725,7 +2744,9 @@ class FishPlugin(Star):
             _owner_hit = bool(_owner) and str(uid) == _owner
             # 25 秒内它刚说过话，就当这条是在对它说：群里骂人一大半不带 @，
             # 少这条判断，「你他妈傻逼」这种明摆着冲它来的会被当空气
-            _to_me = (now - getattr(self, "_last_bot_ts", {}).get(gid, 0.0)) < 25
+            _to_me = ((now - getattr(self, "_last_bot_ts", {}).get(gid, 0.0)) < 25
+                      and (is_at or self._addressed_to_me(text)
+                           or bool(re.search(r"你(?:他妈|妈|丫|个|们|这|那|是|说|在)", text))))
             # 注意：这里要的是「这句在骂主人」，不是「这句话是主人说的」。
             # 以前传 _owner_hit，结果主人自己吐槽一句「这 sb 又崩了」，
             # 鱼收到的提示是「life 刚指名骂了你主人 life」，直接进三档开喷
@@ -2807,6 +2828,14 @@ class FishPlugin(Star):
                 logger.info("[fish] 群 %s 有人转发、没人叫，不主动接", gid)
                 self.log_event("skip", gid, "[转发]", who=nick, why="转发·不主动评价")
                 await self._remember(gid, uid, "[转发]")
+                return
+            # 冷场退避：连着两次主动插话没人接就撤退，这段时间只回指名/追问。
+            # 群里最刺眼的就是两三个人自顾自聊，机器人还一句一句往上凑
+            if now < float(st.silent_until or 0):
+                logger.info("[fish] 群 %s 冷场退避中（还剩 %.0fs），不主动接：%s",
+                            gid, st.silent_until - now, text[:24])
+                self.log_event("skip", gid, text[:60], who=nick, why="冷场退避")
+                await self._remember(gid, uid, text)
                 return
             ok, reason = self._should_interject(gid, st, text, now, has_image, has_media, uid)
             # 贴了 B 站链接/BV 号：在质量分眼里只是 12 个字符的短消息，给 0.36 就跳过了。
@@ -3034,6 +3063,9 @@ class FishPlugin(Star):
         _ru.append((now, uid))
         del _ru[:-20]
         self._replied_uids = {**getattr(self, "_replied_uids", {}), gid: _ru}
+        # 主动接话要记账：90 秒后没人理它就算一次冷场（见下面的退避闸）
+        if str(reason).startswith("主动接话"):
+            st.pending_interject_ts = now
         logger.info("[fish] 群 %s %s(%s) 决定回（%s）：%s", gid, nick, uid, reason, text[:40])
         # 这里不能 stop_event：它有 STOP 结果，连我们自己刚 yield 的 request_llm 一起拦掉，
         # 实测 ab! 消息一条回复都发不出去。防双回靠「框架只在无 request_llm 时才走默认 LLM」
