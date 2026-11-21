@@ -38,7 +38,8 @@ def _guarded(text: str, delimiters: str) -> list[str]:
         elif ch in _CLOSE:
             depth = max(0, depth - 1)
         if depth == 0 and ch in delimiters and not in_url:
-            out.append(buf)
+            # 按逗号/顿号切开时把它吃掉：连发两条不会一条卡在「就这点火气，」上
+            out.append(buf[:-1] if ch in _SOFT else buf)
             buf = ""
     if buf.strip():
         # 尾巴一两个字的碎片并回上一块，别让它单独成条
@@ -117,6 +118,28 @@ def _flatten(chunk: str) -> str:
     return re.sub(r"\s*\n+\s*", " ", chunk).strip()
 
 
+_STUB_CHARS = 6   # 不到这个字数的独立一行，多半是被换行切碎的半句
+
+
+def _merge_stubs(parts: list[str]) -> list[str]:
+    """把「不是」「啊这」这种碎句并进下一行。
+
+    模型偶尔写成「不是\nlinux 内核是 GPLv2」，按换行切开就变成先发两个字的
+    「不是」，再发一整句——群里看着像卡了一下，还重复了一遍开头。
+    """
+    out = list(parts)
+    i = 0
+    while i < len(out) - 1:
+        if len(out[i]) < _STUB_CHARS:
+            head, nxt = out[i], out[i + 1]
+            sep = "" if head.endswith(("，", "。", "！", "？", "…", ",", ".", "!", "?")) else "，"
+            out[i + 1] = head + sep + nxt
+            del out[i]
+            continue
+        i += 1
+    return out
+
+
 def split_reply(text: str, max_chars: int = 26, max_parts: int = 3, min_tail: int = 3) -> list[str]:
     """返回 1~max_parts 条待发文本。短于阈值时原样返回单条。
 
@@ -131,7 +154,7 @@ def split_reply(text: str, max_chars: int = 26, max_parts: int = 3, min_tail: in
             if not line:
                 continue
             out.extend(split_reply(line, max_chars=max_chars, max_parts=max_parts, min_tail=min_tail))
-        return _fold_tail(out, max_parts, max_chars)
+        return _fold_tail(_merge_stubs(out), max_parts, max_chars)
     if not text:
         return []
     # 模型爱用空行隔开两句话，群里显示成一大段空白。

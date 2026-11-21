@@ -31,7 +31,6 @@ fish_core/social_read.py   第一步判官：这轮在聊什么、该不该接�
 fish_core/vision.py        识图（走框架 provider 或直连 Gemini），带降级链
 fish_core/meme_*.py        表情包选图、斗图闸、梗百科、自己画牌子
 fish_core/song.py          自然语言点歌（复用 listen_music 插件搜下载）
-fish_core/bili_video.py    B 站视频下载直发，含本机临时 HTTP 中转
 fish_core/panel.py         控制台后端，页面在 pages/console/index.html
 fish_core/fish_memory.py / memory_atoms.py / affect.py / favor.py   记忆、印象、心境、好感
 scripts/                   自检、冒烟、注入测试、梗同步、黑话挖掘、配置文档生成
@@ -86,10 +85,13 @@ AstrBot 只会把「@我 / `ab!` 前缀 / 引用我 / 私聊」的消息放进�
 
 面板 → 插件 → 小鲸鱼·群聊拟真。必须动的三项：`enabled_groups`、`bot_nickname`、`vision_api_key`（不填就跳过识图）。
 
+链接解析（B站/抖音/小红书/公众号等）不在本插件里做，交给独立插件
+[`astrbot_plugin_media_parser`](https://github.com/drdon1234/astrbot_plugin_media_parser)；
+这只鱼看到链接只做一件事——不接话，免得冒一句「我看不了视频」。
+
 其余 90 项的默认值、说明、调法见 [`docs/config.md`](../../docs/config.md)。几个容易踩的：
 
 - `interject_cooldown_sec` 会同时改写 `interject_planner.COOLDOWN_SEC`，否则硬冷却放行、软权重还按老值打折；
-- `video_http_host` 留空自动探本机内网 IP，NapCat 在另一台机器上也能发视频；
 - `social_read_provider` 留空 = 用当前会话默认 provider，判官一般挂便宜的那档。
 
 ## 依赖

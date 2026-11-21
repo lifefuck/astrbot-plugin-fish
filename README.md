@@ -91,7 +91,6 @@ AstrBot 面板 → 插件 → 小鲸鱼·群聊拟真。必须动的几个：
 | `poke_back` | 被戳要不要回戳 |
 | `enable_games` | 文字游戏（数字炸弹、骰子、抽签、点名） |
 | `meme_battle_enabled` | @ 它带图时要不要斗图反杀 |
-| `media_parse_enabled` | 解析消息里的链接和视频号 |
 | `connectors_enabled` | 被叫到且明确问到时才联网（搜番 / 网页检索 / B 站热门） |
 | `meme_pool_size` / `meme_rotation_sec` | 热梗池每轮注入多少条、多久换一轮 |
 
@@ -113,7 +112,6 @@ AstrBot 面板 → 插件 → 小鲸鱼·群聊拟真。必须动的几个：
 | `meme_gen_enabled` / `meme_gen_timeout_sec` | 自己画带字的表情包，以及单张超时 |
 | `tattle_watch_groups` | 主动上报的群白名单，**留空 = 一个群都不上报** |
 | `order_guard_enabled` / `order_guard_cooldown_sec` | 秩序巡检总闸与同群上报冷却 |
-| `video_http_host` | 发 B 站视频时用来喂给 NapCat 的中转地址，**留空自动探本机内网 IP** |
 
 表情包是个可选依赖：把表情包目录放在 `astrbot_plugin_fish/fish_core/meme-pack/`，索引会自动载入；没有就只发文字。仓库不带素材。
 

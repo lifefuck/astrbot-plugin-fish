@@ -35,7 +35,9 @@ _MIN_REPLY, _MAX_REPLY = 2, 24
 _BAD_REPLY = re.compile(r"^[#*/%~]|^\[CQ:|^(草|草草|233+|hhh+|\.\.\.|。。。)$|^\d+$")
 _BAD_PREV = re.compile(r"^\[CQ:|^[#*/%~]")
 # 群管机器人、欢迎语、引用块、内部占位：这些不是群友在聊天，学进来只会教它发通知
-_NOISE = re.compile(r"\[引用|\[合并转发|\[CQ:|欢迎新人|管理员可以|撤回了一条|邀请.*加入了群聊|"
+# 还要拦 @昵称(QQ号)、裸链接、[At:123] —— 教模型这些格式，它就会真的去 @ 人、吐标记
+_NOISE = re.compile(r"\[引用|\[合并转发|\[CQ:|\[At:\d+\]|@\S+\(\d{4,}\)|https?://|"
+                    r"欢迎新人|管理员可以|撤回了一条|邀请.*加入了群聊|"
                     r"\{\{[A-Z_]+_[a-z0-9]+\}\}")
 
 _pool = []            # [{gid, a, b, ts}]
@@ -180,6 +182,12 @@ def _too_similar(reply: str, gid: str) -> bool:
 def _add(gid, prev: str, reply: str) -> bool:
     global _dirty
     _load()
+    # 在线路径以前完全跳过质量闸，实测把「@某人(QQ号)」「[引用…]」「裸链接」「#指令」
+    # 都学进来了，再作为 few-shot 注入 prompt —— 等于手把手教模型这些格式。
+    # 统一走 _usable（离线挖掘一直走的就是它），不合格直接不收。
+    if not _usable(prev, reply):
+        return False
+    prev, reply = _strip_noise(prev), _strip_noise(reply)
     if _too_similar(reply, gid):
         return False
     key = (str(gid), prev[:20], reply)

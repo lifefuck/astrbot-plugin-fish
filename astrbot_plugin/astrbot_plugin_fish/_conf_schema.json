@@ -17,6 +17,24 @@
     "default": "小鲸鱼",
     "hint": "只在 prompt 里锚定身份用，避免模型把自己的名字当成别人。"
   },
+  "self_nickname": {
+    "description": "合并转发卡片里的落款名",
+    "type": "string",
+    "default": "",
+    "hint": "检索答案、长文用合并聊天记录发时，卡片头上显示的名字。留空 = 跟上面「QQ 上的昵称」一致。"
+  },
+  "owner_favor_lock": {
+    "description": "主人好感度锁定值",
+    "type": "int",
+    "default": 100,
+    "hint": "主人在群里的好感分不随风波动，固定按这个值算。"
+  },
+  "atoms_distill_timeout_sec": {
+    "description": "印象提炼超时（秒）",
+    "type": "int",
+    "default": 6,
+    "hint": "从群友的话里提炼长期印象时的等待上限；超时就跳过，不拖慢回复。"
+  },
   "wake_prefix": {
     "description": "AstrBot 唤醒前缀（仅用于识别，不拦消息）",
     "type": "string",
@@ -163,6 +181,36 @@
     "type": "bool",
     "default": true,
     "hint": "只在决定要回的时候才识图，不会为每张图烧配额。识图失败静默降级成纯文字。"
+  },
+  "vision_wb_enable": {
+    "description": "识图先走 WB 池（本地 3425 网关）",
+    "type": "bool",
+    "default": true,
+    "hint": "Gemini 常年限流，群里发图就瞎。WB 池实测 2.6~4.3s 出描述、连打 6 发不限流，所以放第一位，Gemini 只当兜底。"
+  },
+  "vision_wb_base": {
+    "description": "WB 网关地址",
+    "type": "string",
+    "default": "http://127.0.0.1:3425/v1"
+  },
+  "vision_wb_key": {
+    "description": "WB 网关密钥（本地网关留空即可）",
+    "type": "string",
+    "default": ""
+  },
+  "vision_wb_models": {
+    "description": "WB 识图模型顺序",
+    "type": "list",
+    "default": [
+      "wb/glm-5v-turbo",
+      "wb/minimax-m3.1-flash"
+    ],
+    "hint": "glm-5v-turbo 是视觉专用模型，2.8s 出描述、读数字最准；minimax-m3.1-flash 同延迟兜底。别用 glm-5.1/5.2/5.3，会把 7392 念成 7.392。",
+    "items": [
+      "wb/glm-5v-turbo",
+      "wb/minimax-m3.1-flash",
+      "wb/mimo-v2.6-pro"
+    ]
   },
   "vision_model": {
     "description": "视觉主模型",
@@ -360,6 +408,30 @@
     "default": true,
     "description": "被问到出处/最新消息时才联网检索"
   },
+  "research_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "被 @ 问到正经问题时，先搜网页、读正文，再回答",
+    "hint": "开了之后这类问题会先发一句「我去查下」，再回带出处的完整答案。闲聊完全不受影响，走原来的拆条和口癖。"
+  },
+  "research_max_rounds": {
+    "type": "int",
+    "default": 4,
+    "description": "检索最多几轮工具调用",
+    "hint": "每轮可以搜一次或读一个网页。4 轮够覆盖「查型号→查代号→读状态表」；调大只会更慢。"
+  },
+  "research_budget_sec": {
+    "type": "int",
+    "default": 150,
+    "description": "一次检索的总时长上限（秒）",
+    "hint": "到点就拿手上已有的材料收尾，不会把群挂在那儿等。"
+  },
+  "search_proxy": {
+    "type": "string",
+    "default": "",
+    "description": "搜索用的 HTTP 代理",
+    "hint": "留空自动用 http://127.0.0.1:7890（DuckDuckGo 直连不通）。代理没开时自动退到百度。"
+  },
   "enable_games": {
     "type": "bool",
     "default": true,
@@ -369,11 +441,6 @@
     "type": "bool",
     "default": true,
     "description": "有人 @ 它还甩图时斗图反杀"
-  },
-  "media_parse_enabled": {
-    "type": "bool",
-    "default": true,
-    "description": "解析消息里的 B 站/GitHub/音乐/短视频链接"
   },
   "meme_pool_size": {
     "type": "int",
@@ -556,6 +623,22 @@
     "type": "int",
     "default": 25
   },
+  "pixiv_enabled": {
+    "description": "按标签发图（模型写 [看图:标签] 时去 pixiv 捞一张，只发全年龄）",
+    "type": "bool",
+    "default": true
+  },
+  "pixiv_cookie": {
+    "description": "Pixiv Cookie（留空则自动借用流媒体解析插件里的那份）",
+    "type": "string",
+    "default": "",
+    "hint": "需要包含 PHPSESSID；不填也能搜，但拿不到原图"
+  },
+  "pixiv_proxy": {
+    "description": "Pixiv 走哪个代理（国内必须）",
+    "type": "string",
+    "default": "http://127.0.0.1:7890"
+  },
   "patrol_judge_gap_sec": {
     "description": "同一群两次巡检判定的最小间隔（秒），防刷屏时疯狂调模型",
     "type": "int",
@@ -581,28 +664,52 @@
     "type": "int",
     "default": 180
   },
-  "video_download_enabled": {
-    "description": "视频解析：贴 B 站链接直接发视频",
+  "chat_min_gap_sec": {
+    "type": "int",
+    "description": "对话延续最小间隔（秒）",
+    "hint": "120 秒硬冷却只管「主动插嘴」；同一个人接着聊、直呼外号、主人开口都只受这个间隔限制。设 0 = 不限。",
+    "default": 2
+  },
+  "judge_inline": {
+    "type": "bool",
+    "description": "判官并进主请求",
+    "hint": "开：不再单独发一次判官小请求，改由主模型判断「该不该接」，不想接就内部吐 [PASS]。省 3~5 秒，且少一个永远命不中缓存的请求。被 @ 和追问窗口不受影响，必回。",
+    "default": true
+  },
+  "multi_turn_contexts": {
+    "type": "bool",
+    "description": "多轮上下文（缓存友好）",
+    "hint": "开：群聊记录按 messages 追加传递，前缀稳定，缓存命中率显著提高；关：退回旧版「每轮重拼整段时间线」。",
+    "default": true
+  },
+  "context_turns_max": {
+    "type": "int",
+    "description": "上文最多保留条数",
+    "hint": "超过就一次砍掉四分之一。砍得越频繁命中率越低，48 条约二三十轮一次。",
+    "default": 48
+  },
+  "quarrel_enabled": {
+    "description": "被骂了还嘴",
     "type": "bool",
     "default": true,
-    "hint": "关掉后只发图文卡片，不下载视频文件。"
+    "hint": "只有点名骂它、或骂到主人头上才触发；别人互骂一律不动。判定在 fish_core/quarrel.py，不占提示词。"
   },
-  "video_http_host": {
-    "description": "视频中转地址（本机内网 IP）",
-    "type": "string",
-    "default": "",
-    "hint": "NapCat 跑在别的机器上，读不到本机文件路径，下载好的片子得经本机临时 HTTP 喂给它。留空自动探测本机内网 IP。"
+  "insult_actions_enabled": {
+    "description": "让鱼去骂人",
+    "type": "bool",
+    "default": true,
+    "hint": "群友说「骂一下谁」「群嘲」时真的 @ 到人头上；不骂群管和主人。"
   },
-  "video_max_mb": {
-    "description": "单条视频体积上限（MB）",
+  "insult_cooldown_sec": {
+    "description": "骂人间隔（秒）",
     "type": "int",
-    "default": 80,
-    "hint": "超过就先降画质，降到 360p 还超就只发卡片。"
+    "default": 60,
+    "hint": "同一个群两次执行的最小间隔，防止有人拿它刷屏。"
   },
-  "video_max_minutes": {
-    "description": "单条视频时长上限（分钟）",
+  "insult_max_targets": {
+    "description": "群嘲最多点几个人",
     "type": "int",
-    "default": 30,
-    "hint": "超过就直接只发卡片，别让两小时直播回放把磁盘和群都撑爆。"
+    "default": 3,
+    "hint": "一次无差别攻击最多 @ 的人数。"
   }
 }

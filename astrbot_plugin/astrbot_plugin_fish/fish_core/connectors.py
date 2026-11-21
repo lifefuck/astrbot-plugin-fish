@@ -25,80 +25,88 @@ import aiohttp
 
 logger = logging.getLogger("DeepSeekBot")
 
-# media_resolver 由同目录的兄弟模块提供。它还在移植中，没落地时不能让整个插件
-# import 失败，所以这里兜底一份「宁可拒绝」的最小实现：功能一样，只是没有做
-# DNS 结果缓存的优化。
-try:  # pragma: no cover - 正常路径（media_resolver 已就位）
-    from media_resolver import (  # type: ignore
-        _is_public_url,
-        _read_body,
-        connected_peer_is_public,
-    )
-except ImportError:  # pragma: no cover - 兜底分支，自测里单独覆盖
-    import asyncio
-    import ipaddress
-    import socket
-    from urllib.parse import urlparse
+# 出口闸用的公网判定：全仓唯一实现（media_resolver 退役后搬回这里），
+# 宁可拒绝也不能误放——内网、回环、链路本地、元数据地址一律当危险。
+import asyncio
+import ipaddress
+import socket
+from urllib.parse import urlparse
 
-    def _is_public_ip(ip_str: str) -> bool:
-        try:
-            ip = ipaddress.ip_address(ip_str)
-        except ValueError:
-            return False
-        return not (
-            ip.is_private or ip.is_loopback or ip.is_link_local
-            or ip.is_reserved or ip.is_multicast or ip.is_unspecified
-        )
+# 这几个段 ipaddress 不认为 private，但实际全是不该被外部访问的地址：
+# 100.64/10 是运营商级 NAT（tailscale/家宽内网就在这儿）、192.0.0/24、198.18/15、240/4。
+# 实测 `_is_public_ip('100.91.11.60')` 返回 True，本机 tailscale 上的服务被直接读出来了。
+_BLOCKED_NETS = tuple(ipaddress.ip_network(n) for n in (
+    "100.64.0.0/10",   # CGNAT
+    "192.0.0.0/24",    # IETF 协议分配
+    "198.18.0.0/15",   # 基准测试保留
+    "240.0.0.0/4",     # 保留 + 广播
+))
 
-    async def _is_public_url(url: str) -> bool:
-        """主机名解析成真实 IP 再判断：只看字符串挡不住 DNS 指向内网。"""
-        try:
-            parsed = urlparse(url)
-            scheme, host = parsed.scheme, (parsed.hostname or "").lower()
-        except ValueError:
-            return False
-        if scheme not in ("http", "https") or not host or host == "localhost":
-            return False
-        try:
-            ipaddress.ip_address(host)
-            return _is_public_ip(host)
-        except ValueError:
-            pass
-        try:
-            infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
-            return bool(infos) and all(_is_public_ip(info[4][0]) for info in infos)
-        except Exception:
-            return False
 
-    def connected_peer_is_public(resp: Any) -> bool:
-        """看 socket 对端地址，防 DNS rebinding；拿不到信息就按原校验放行。"""
-        try:
-            conn = getattr(resp, "connection", None)
-            transport = getattr(conn, "transport", None)
-            if transport is None:
-                return True
-            peer = transport.get_extra_info("peername")
-            if not peer:
-                return True
-            ip = peer[0] if isinstance(peer, (tuple, list)) else str(peer)
-            return _is_public_ip(ip)
-        except Exception:
+def _is_public_ip(ip_str: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    if (
+        ip.is_private or ip.is_loopback or ip.is_link_local
+        or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+    ):
+        return False
+    # IPv4-mapped IPv6（::ffff:127.0.0.1）要拆出来单独判，否则绕一圈就进来了
+    if ip.version == 6 and ip.ipv4_mapped:
+        return _is_public_ip(str(ip.ipv4_mapped))
+    return not any(ip in net for net in _BLOCKED_NETS if net.version == ip.version)
+
+async def _is_public_url(url: str) -> bool:
+    """主机名解析成真实 IP 再判断：只看字符串挡不住 DNS 指向内网。"""
+    try:
+        parsed = urlparse(url)
+        scheme, host = parsed.scheme, (parsed.hostname or "").lower()
+    except ValueError:
+        return False
+    if scheme not in ("http", "https") or not host or host == "localhost":
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return _is_public_ip(host)
+    except ValueError:
+        pass
+    try:
+        infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
+        return bool(infos) and all(_is_public_ip(info[4][0]) for info in infos)
+    except Exception:
+        return False
+
+def connected_peer_is_public(resp: Any) -> bool:
+    """看 socket 对端地址，防 DNS rebinding；拿不到信息就按原校验放行。"""
+    try:
+        conn = getattr(resp, "connection", None)
+        transport = getattr(conn, "transport", None)
+        if transport is None:
             return True
+        peer = transport.get_extra_info("peername")
+        if not peer:
+            return True
+        ip = peer[0] if isinstance(peer, (tuple, list)) else str(peer)
+        return _is_public_ip(ip)
+    except Exception:
+        return True
 
-    async def _read_body(resp: Any, limit: int = 2 * 1024 * 1024) -> bytes:
-        """分块读到 EOF。不能用 content.read(limit) 一把梭：它可能半截就返回。"""
-        declared = getattr(resp, "content_length", None)
-        if declared and declared > limit:
-            return await resp.content.read(limit)
-        chunks: List[bytes] = []
-        total = 0
-        while total < limit:
-            chunk = await resp.content.read(min(65536, limit - total))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            total += len(chunk)
-        return b"".join(chunks)
+async def _read_body(resp: Any, limit: int = 2 * 1024 * 1024) -> bytes:
+    """分块读到 EOF。不能用 content.read(limit) 一把梭：它可能半截就返回。"""
+    declared = getattr(resp, "content_length", None)
+    if declared and declared > limit:
+        return await resp.content.read(limit)
+    chunks: List[bytes] = []
+    total = 0
+    while total < limit:
+        chunk = await resp.content.read(min(65536, limit - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return b"".join(chunks)
 
 
 # ==================== 公共常量 ====================

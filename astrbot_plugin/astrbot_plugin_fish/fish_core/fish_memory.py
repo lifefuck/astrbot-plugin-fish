@@ -8,11 +8,13 @@
 """
 from __future__ import annotations
 
+import glob
 import hashlib
 import logging
 import math
 import os
 import re
+import shutil
 import sqlite3
 import time
 from typing import Dict, List, Optional, Tuple
@@ -22,6 +24,10 @@ _logger = logging.getLogger(__name__)
 HERE = os.path.dirname(os.path.abspath(__file__))
 # HERE 是 services/，只要上跳一级到项目根；以前多跳一级，库落在了 projects/data/
 DEFAULT_DB_PATH = os.path.join(HERE, "..", "data", "fish_memory.db")
+
+# 这个模块以前没定义 logger，except 里的 logger.debug 一执行就是 NameError，
+# 记账失败时会直接抛到调用方
+logger = logging.getLogger("astrbot_plugin_fish.memory")
 
 CJK = re.compile(r"[\u4e00-\u9fff]")
 NEG = re.compile(r"[不没别未无]")
@@ -110,6 +116,19 @@ CREATE TABLE IF NOT EXISTS fish_turn_logs (
     closed     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_fish_log_lookup ON fish_turn_logs (group_id, person_id, closed);
+
+-- 每轮真实 token 账本。/tocken 的全部数字都从这张表算，
+-- 不读日志、不猜网关，落库时记的是网关返回的原值
+CREATE TABLE IF NOT EXISTS fish_token_logs (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      REAL NOT NULL,
+    kind    TEXT NOT NULL DEFAULT 'chat',   -- chat 聊天 / search 联网 / judge 判官 / vision 识图
+    input   INTEGER NOT NULL DEFAULT 0,
+    hit     INTEGER NOT NULL DEFAULT 0,
+    output  INTEGER NOT NULL DEFAULT 0,
+    ms      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_token_ts ON fish_token_logs (ts);
 """
 
 
@@ -136,9 +155,73 @@ class FishMemoryEngine:
         return conn
 
     def _init_db(self):
-        with self._get_conn() as conn:
-            conn.executescript(DDL)
-            conn.commit()
+        """建库/建表；库文件坏了就地隔离并回滚，绝不让整个插件加载失败。
+
+        踩过的坑：库一旦 malformed，`conn.executescript` 直接抛 DatabaseError，
+        而这段是在模块顶层 import 期执行的 —— 整个 astrbot_plugin_fish 起不来，
+        群里 @ 它 79 秒毫无反应，只能人工 mv 坏库。备份任务也在加载之后才跑，
+        所以「有备份」救不了这种情况。
+        """
+        try:
+            with self._get_conn() as conn:
+                conn.executescript(DDL)
+                conn.commit()
+            return
+        except sqlite3.DatabaseError as e:
+            logger.error("[fish] 记忆库不可用（%s）：%s，开始隔离并尝试回滚", self.db_path, e)
+        self._recover_db()
+
+    def _backup_candidates(self) -> List[str]:
+        """按新到旧列出可用的库备份（日备目录 + 同目录 .bak）。"""
+        cands: List[str] = []
+        dirs = [os.path.expanduser("~/.astrbot/backups"),
+                os.path.join(os.path.dirname(os.path.abspath(self.db_path)), "backups")]
+        for d in dirs:
+            cands.extend(glob.glob(os.path.join(d, "fish_memory-*.db")))
+        cands.extend(glob.glob(self.db_path + ".bak-*"))
+        return sorted(cands, key=lambda p: os.path.getmtime(p), reverse=True)
+
+    def _recover_db(self) -> None:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        for suffix in ("", "-wal", "-shm"):
+            p = self.db_path + suffix
+            if not os.path.exists(p):
+                continue
+            try:
+                os.replace(p, f"{p}.corrupt-{stamp}")
+            except Exception:
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+        for cand in self._backup_candidates():
+            try:
+                shutil.copy2(cand, self.db_path)
+                with sqlite3.connect(self.db_path) as conn:
+                    if str(conn.execute("PRAGMA integrity_check").fetchone()[0]) != "ok":
+                        raise sqlite3.DatabaseError("回滚副本自身校验失败")
+                    conn.executescript(DDL)
+                    conn.commit()
+                logger.warning("[fish] 记忆库已从备份回滚：%s（%d 字节）",
+                               cand, os.path.getsize(self.db_path))
+                return
+            except Exception as e:
+                logger.warning("[fish] 回滚副本不可用 %s：%s", cand, e)
+                for suffix in ("", "-wal", "-shm"):
+                    try:
+                        os.remove(self.db_path + suffix)
+                    except Exception:
+                        pass
+        # 没有可用备份：建空库继续跑，宁可丢记忆也不能让整只 bot 起不来
+        try:
+            if os.path.exists(self.db_path):
+                os.remove(self.db_path)
+            with self._get_conn() as conn:
+                conn.executescript(DDL)
+                conn.commit()
+            logger.error("[fish] 没有可用备份，已重建空记忆库：%s", self.db_path)
+        except Exception as e:
+            logger.error("[fish] 重建记忆库失败：%s", e)
 
     # ---------------- 分词与特征提取 ----------------
     @staticmethod
@@ -496,6 +579,90 @@ class FishMemoryEngine:
             )
             conn.commit()
         return False
+
+    # ---------- token 账本 ----------
+    def log_token(self, kind: str, input_tokens: int, hit_tokens: int,
+                  output_tokens: int, ms: int, ts: Optional[float] = None) -> None:
+        """记一轮真实用量。落库的是网关原值，不做任何估算补全。"""
+        try:
+            with self._get_conn() as conn:
+                conn.execute(
+                    "INSERT INTO fish_token_logs (ts, kind, input, hit, output, ms)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (float(ts if ts is not None else time.time()), str(kind or "chat"),
+                     int(input_tokens or 0), int(hit_tokens or 0),
+                     int(output_tokens or 0), int(ms or 0)),
+                )
+        except Exception as e:  # 记账失败绝不能影响回话
+            logger.debug("[fish] token 记账失败：%s", e)
+
+    def token_stats(self) -> Dict[str, Dict[str, float]]:
+        """/tocken 的全部数据源：最近 10 条 + 7 日/昨日/今日 三窗口。"""
+        now = time.time()
+        lt = time.localtime(now)
+        today0 = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        yday0 = today0 - 86400
+        windows = {"7日": (now - 7 * 86400, None), "昨日": (yday0, today0),
+                   "今日": (today0, None)}
+
+        def _agg(since: float, until: Optional[float], kind: Optional[str] = None):
+            sql = ("SELECT COUNT(*) n, COALESCE(SUM(input),0) inp, COALESCE(SUM(hit),0) hit,"
+                   " COALESCE(SUM(output),0) outp, COALESCE(SUM(ms),0) ms FROM fish_token_logs"
+                   " WHERE ts >= ?")
+            args: list = [since]
+            if until is not None:
+                sql += " AND ts < ?"
+                args.append(until)
+            if kind:
+                sql += " AND kind = ?"
+                args.append(kind)
+            try:
+                with self._get_conn() as conn:
+                    row = conn.execute(sql, args).fetchone()
+            except Exception as e:
+                logger.debug("[fish] token 统计失败：%s", e)
+                return {"n": 0, "inp": 0, "hit": 0, "outp": 0, "ms": 0}
+            return dict(row) if row else {"n": 0, "inp": 0, "hit": 0, "outp": 0, "ms": 0}
+
+        out: Dict[str, Dict[str, float]] = {}
+        for name, (since, until) in windows.items():
+            allw = _agg(since, until)
+            chat = _agg(since, until, "chat")
+            search = _agg(since, until, "search")
+            out[name] = {
+                "n": allw["n"], "inp": allw["inp"], "hit": allw["hit"],
+                "outp": allw["outp"], "ms": allw["ms"],
+                "n_chat": chat["n"], "chat_inp": chat["inp"], "chat_outp": chat["outp"],
+                "chat_ms": chat["ms"],
+                "n_search": search["n"], "search_inp": search["inp"],
+                "search_outp": search["outp"], "search_ms": search["ms"],
+            }
+        # 最近 10 条聊天：只算 chat，联网那条路的输入天然大一个量级，混进来就没意义
+        try:
+            with self._get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT input, hit, output FROM fish_token_logs"
+                    " WHERE kind='chat' ORDER BY ts DESC LIMIT 10").fetchall()
+        except Exception:
+            rows = []
+        # 当前上下文大小 = 最近一次聊天调用真实喂进去的输入 token。
+        # 这个数比「猜历史条数」准，它含人设、规则、记忆、ctx 全部内容
+        try:
+            with self._get_conn() as conn:
+                row = conn.execute(
+                    "SELECT input, ts FROM fish_token_logs WHERE kind='chat'"
+                    " ORDER BY ts DESC LIMIT 1").fetchone()
+        except Exception:
+            row = None
+        out["当前"] = {"inp": row["input"] if row else 0,
+                       "ts": row["ts"] if row else 0}
+        out["最近10"] = {
+            "n": len(rows),
+            "inp": sum(r["input"] for r in rows),
+            "hit": sum(r["hit"] for r in rows),
+            "outp": sum(r["output"] for r in rows),
+        }
+        return out
 
     def prune(self, log_days: float = 45.0, grave_days: float = 30.0) -> dict:
         """定期清理：流水账留 45 天，软删的记忆留 30 天。

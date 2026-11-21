@@ -63,7 +63,8 @@ def style_samples_hint(group_id) -> str:
         return ""
     picked = random.sample(pool, min(5, len(pool)))
     body = "\n".join("「" + str(x["a"]) + "」→「" + str(x["b"]) + "」" for x in picked)
-    return "\n【这个群真实的接话长这样】别照抄内容，学的是「随口一句、踩在具体那件事上」的劲：\n" + body
+    return ("\n【这个群真实的接话长这样】别照抄内容，学的是「随口一句、踩在具体那件事上」的劲。\n"
+            "这些都是别人的旧对话，里面的人名、群名、事都跟现在无关，别拿来当现在的人说：\n" + body)
 
 
 def time_hint(now: float | None = None) -> str:
@@ -128,14 +129,22 @@ def build_user_prompt(
     media_hint: str = "",
     social_hint: str = "",
     cross_hint: str = "",
+    quarrel_hint: str = "",
+    include_timeline: bool = True,
 ) -> str:
     """按原项目顺序拼 user prompt。"""
     parts = []
-    if is_private:
+    if not include_timeline:
+        # 多轮上下文模式：前面的记录已经作为 messages 传上去了，这里不再重拼一遍。
+        # 以前每轮把整段群聊记录重新拼进 user prompt，滑窗一动整段从头变，
+        # 前缀缓存一个 token 都命不中（Magpie 那边命中率只有 28% 就是这么来的）
+        parts.append("【这是接着上面的对话往下说，前面的记录都在上文里】")
+    elif is_private:
         parts.append("【对话记录】（这是私聊）")
     else:
         parts.append("【群聊记录】（从旧到新，最后一行是刚发生的）")
-    parts.extend(timeline or ["（群里暂时没别人说话）"])
+    if include_timeline:
+        parts.extend(timeline or ["（群里暂时没别人说话）"])
 
     if vision_desc:
         # 图里说了什么必须摆在「当前这句」后面：放最前面模型会当成背景设定，答的时候当没看见
@@ -176,6 +185,11 @@ def build_user_prompt(
 
     if cross_hint:
         parts.append(cross_hint)
+
+    if quarrel_hint:
+        # 有人刚骂了它/它主人。这段只在真正触发的那一轮出现，绝不进常驻人设：
+        # 常驻一条「被骂就喷回去」会让它把调侃也当挑衅，闲聊全毁
+        parts.append("\n" + quarrel_hint)
 
     parts.append(time_hint(now))
     return "\n".join(parts)

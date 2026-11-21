@@ -91,7 +91,6 @@ AstrBot dashboard → Plugins → 小鲸鱼·群聊拟真. The ones you must tou
 | `poke_back` | Whether to poke back |
 | `enable_games` | Text games (number bomb, dice, draws, name-picking) |
 | `meme_battle_enabled` | Fire a meme back when @-ed with an image |
-| `media_parse_enabled` | Parse links and video cards in messages |
 | `connectors_enabled` | Go online only when addressed with a concrete question (anime lookup, web search, Bilibili trending) |
 | `meme_pool_size` / `meme_rotation_sec` | How many memes to inject per round, and how often to rotate |
 
@@ -113,7 +112,6 @@ A few that are easy to miss:
 | `meme_gen_enabled` / `meme_gen_timeout_sec` | Draw text memes on its own, and the per-image timeout |
 | `tattle_watch_groups` | Groups where it reports proactively. **Empty = reports nowhere** |
 | `order_guard_enabled` / `order_guard_cooldown_sec` | Moderation watch master switch and per-group report cooldown |
-| `video_http_host` | Relay address used to hand Bilibili videos to NapCat; **empty = auto-detect the local LAN address** |
 
 Memes are an optional dependency: drop a pack at `astrbot_plugin_fish/fish_core/meme-pack/` and the index loads automatically; without it the bot sends text only. The repo ships no assets.
 

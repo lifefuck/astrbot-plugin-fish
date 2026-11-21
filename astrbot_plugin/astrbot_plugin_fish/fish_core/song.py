@@ -194,6 +194,24 @@ class SongService:
             pass
         return None
 
+    def prune_cache(self, days: int = 7) -> int:
+        """删掉过期缓存。_cache_get 只是「读不到就当没有」，文件本身从不清，
+        点过的歌全留在盘上只增不减。返回删了几个。"""
+        n = 0
+        cutoff = time.time() - days * 86400
+        try:
+            for name in os.listdir(self._cache_dir()):
+                p = os.path.join(self._cache_dir(), name)
+                try:
+                    if os.path.isfile(p) and os.path.getmtime(p) < cutoff:
+                        os.remove(p)
+                        n += 1
+                except OSError:
+                    continue
+        except OSError:
+            return 0
+        return n
+
     def _cache_put(self, query: str, src: str) -> None:
         """把下好的文件拷进缓存目录。
 

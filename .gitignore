@@ -12,3 +12,6 @@ __pycache__/
 .DS_Store
 # 表情包素材是本地素材，按 README 自己放，不要把别人机器的软链接传上来
 astrbot_plugin/astrbot_plugin_fish/fish_core/meme-pack
+
+# 运行时数据（含 t2i 模板与临时文件），随部署目录走，不进版本库
+astrbot_plugin/astrbot_plugin_fish/fish_core/data/

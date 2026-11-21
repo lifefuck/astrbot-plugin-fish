@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""群里有人发图：拉下来交给 Gemini 白描一句，拼进 prompt。
+"""群里有人发图：拉下来交给视觉模型白描一句，拼进 prompt。
+
+默认先走 WB 池（wb/glm-5v-turbo → wb/minimax-m3.1-flash），Gemini 的框架
+provider 和直连链只当兜底——Gemini 常年限流，指望它群聊会经常「瞎」。
 
 设计取舍：
 - 群聊是实时场景，等 40 秒等于没回。所以单模型超时压到 4 秒左右，失败立刻换下一个模型。
@@ -18,6 +21,7 @@ import asyncio
 import base64
 import io
 import ipaddress
+import json
 import os
 import re
 import socket
@@ -446,6 +450,123 @@ async def _one_model(session: aiohttp.ClientSession, key: str, model: str, parts
     return "".join(texts).strip()
 
 
+# ---------------------------------------------------------------- OpenAI 兼容通道（WB 池）
+# 为什么加这一路：Gemini 那边老是限流，群里发张图鱼就瞎了。WB 池（本地 3425 网关）
+# 上的 glm-5v-turbo / minimax-m3.1-flash 实测 2.6~4.3s 出描述、连打 6 发不限流，
+# 所以默认先走它，Gemini 的框架通道和直连链降级到后面当兜底。
+_WB_DEFAULT_BASE = "http://127.0.0.1:3425/v1"
+_WB_DEFAULT_MODELS = ["wb/glm-5v-turbo", "wb/minimax-m3.1-flash"]
+
+# 有的 WB 模型（实测 minimax-m3.1-flash 偶尔）会把「思考过程」当正文吐出来，
+# 原样塞进 prompt 就是一句「We need inspect tiny image. Need exact text」——
+# 这种描述用不了，当成空结果换下一个模型
+_WB_SCRATCH_RE = re.compile(
+    r"^\s*(we need|let me|i need|i'll|the user|okay|first,|sure|looking at|analyze)",
+    re.IGNORECASE)
+_WB_SCRATCH_ANY = re.compile(r"image \d{2,4}x\d{2,4}|need (exact|to inspect)", re.IGNORECASE)
+
+
+def _looks_like_scratch(text: str) -> bool:
+    """判断是不是模型没写完的思考碎片，不是给用户看的描述。"""
+    t = (text or "").strip()
+    if not t:
+        return True
+    if _WB_SCRATCH_RE.match(t) or _WB_SCRATCH_ANY.search(t):
+        return True
+    # 中文群里要的是中文描述；全英文且没一个汉字，基本是思考泄漏
+    return not re.search(r"[\u4e00-\u9fff]", t)
+
+
+async def _one_model_openai(session: aiohttp.ClientSession, base: str, key: str, model: str,
+                            imgs: list[tuple[bytes, str]], timeout: float) -> str:
+    """OpenAI 兼容的图片请求。imgs 是 (字节, mime) 列表。"""
+    content: list[dict] = [{"type": "text", "text": PROMPT}]
+    for raw, mime in imgs:
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime};base64,{base64.b64encode(raw).decode()}"},
+        })
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": 400,
+        "temperature": 0.2,
+    }
+    url = base.rstrip("/") + "/chat/completions"
+    async with session.post(url, json=payload, headers={"Authorization": f"Bearer {key or 'placeholder'}"},
+                            timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+        body = await resp.text()
+        if resp.status != 200:
+            raise RuntimeError(f"HTTP {resp.status} {body[:120]}")
+    data = json.loads(body)
+    if data.get("error"):
+        raise RuntimeError(str(data["error"])[:120])
+    msg = ((data.get("choices") or [{}])[0].get("message") or {})
+    text = (msg.get("content") or "").strip()
+    if not text:
+        # WB 上 deepseek-v4.1-flash 这类把正文全塞 reasoning_content，content 是空串，
+        # 直接判「识别失败」会白白丢掉一个能用的模型
+        text = (msg.get("reasoning_content") or "").strip()
+    return text
+
+
+async def _describe_wb(images: list[bytes], cfg: dict, logger=None) -> str:
+    """先走 WB 池。全挂返回空串，交给后面的 Gemini 链路。"""
+    base = str(cfg.get("vision_wb_base") or "").strip()
+    if not base or not cfg.get("vision_wb_enable", True):
+        return ""
+    models = [str(m) for m in (cfg.get("vision_wb_models") or _WB_DEFAULT_MODELS) if m]
+    imgs: list[tuple[bytes, str]] = []
+    for raw in images[: int(cfg.get("vision_max_images", 2) or 2)]:
+        if not raw:
+            continue
+        try:
+            imgs.append(await asyncio.to_thread(_shrink, raw))
+        except Exception:
+            imgs.append((raw, "image/jpeg"))
+    if not imgs:
+        return ""
+
+    key = str(cfg.get("vision_wb_key") or "")
+    budget = float(cfg.get("vision_total_budget_sec", 12) or 12)
+    started = time.time()
+    session = _get_session()
+    for model in models:
+        used = time.time() - started
+        if used > budget:
+            if logger:
+                logger.warning("[fish] WB 视觉放弃：已用 %.1fs 超过预算 %.0fs", used, budget)
+            break
+        # 冷启动那次 glm 实测要 8.6 秒，给到 10 秒，别把主力模型的第一发判死
+        per_model = max(1.0, min(10.0, budget - used))
+        t0 = time.time()
+        try:
+            text = await _one_model_openai(session, base, key, model, imgs, per_model)
+            if text and _looks_like_scratch(text):
+                if logger:
+                    logger.warning("[fish] WB 视觉 %s 吐的是思考碎片，跳过：%s",
+                                   model, text[:60])
+                continue
+            if text:
+                if logger:
+                    logger.info("[fish] WB 视觉 %s 出描述（%.1fs）：%s",
+                                model, time.time() - t0, text[:60])
+                try:
+                    extra = _puns().note(text)
+                    if extra:
+                        text = f"{text}\n谐音（按图里的字查到的）：{extra}"
+                except Exception:
+                    pass
+                return text
+            if logger:
+                logger.warning("[fish] WB 视觉 %s 返回空（%.1fs）", model, time.time() - t0)
+        except Exception as e:
+            if logger:
+                logger.warning("[fish] WB 视觉 %s 失败（%.1fs）：%s: %s",
+                               model, time.time() - t0, type(e).__name__, str(e)[:100])
+    return ""
+
+
 # 框架视觉通道：AstrBot 里配了带图片能力的 provider（gemini-vision）之后，
 # 识别交给框架做，本文件自己的直连链路只当兜底。
 # 为什么留兜底而不是删干净：框架 provider 被停用/额度打满时，鱼会突然「瞎」，
@@ -476,6 +597,10 @@ async def _describe_raw(images: list[bytes], cfg: dict, logger=None) -> str:
     """images：原始图片字节。全部失败返回 \"\"。"""
     if not images:
         return ""
+    # 顺序：WB 池（快、不限流）→ 框架 provider（Gemini）→ 直连 Gemini
+    via_wb = await _describe_wb(images, cfg, logger=logger)
+    if via_wb:
+        return via_wb
     via_fw = await _describe_via_framework(images, cfg, logger=logger)
     if via_fw:
         return via_fw
