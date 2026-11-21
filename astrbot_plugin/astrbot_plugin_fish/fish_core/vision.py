@@ -510,7 +510,8 @@ async def _one_model_openai(session: aiohttp.ClientSession, base: str, key: str,
     return text
 
 
-async def _describe_wb(images: list[bytes], cfg: dict, logger=None) -> str:
+async def _describe_wb(images: list[bytes], cfg: dict, logger=None,
+                       deadline: float | None = None) -> str:
     """先走 WB 池。全挂返回空串，交给后面的 Gemini 链路。"""
     base = str(cfg.get("vision_wb_base") or "").strip()
     if not base or not cfg.get("vision_wb_enable", True):
@@ -528,7 +529,13 @@ async def _describe_wb(images: list[bytes], cfg: dict, logger=None) -> str:
         return ""
 
     key = str(cfg.get("vision_wb_key") or "")
-    budget = float(cfg.get("vision_total_budget_sec", 12) or 12)
+    # 预算按「整条降级链共用一个 deadline」算：以前每个阶段各自起一个 started，
+    # 最坏 20(WB)+20(Gemini)+框架通道，一张图能把回复拖到半分钟
+    budget = (deadline - time.time()) if deadline else float(cfg.get("vision_total_budget_sec", 12) or 12)
+    if budget <= 0.5:
+        if logger:
+            logger.warning("[fish] 视觉跳过 WB：总预算已用完")
+        return ""
     started = time.time()
     session = _get_session()
     for model in models:
@@ -580,7 +587,8 @@ def set_framework_caller(fn) -> None:
     _framework_caller = fn
 
 
-async def _describe_via_framework(images: list[bytes], cfg: dict, logger=None) -> str:
+async def _describe_via_framework(images: list[bytes], cfg: dict, logger=None,
+                                  deadline: float | None = None) -> str:
     if _framework_caller is None or not cfg.get("vision_use_framework_provider", True):
         return ""
     try:
@@ -597,11 +605,14 @@ async def _describe_raw(images: list[bytes], cfg: dict, logger=None) -> str:
     """images：原始图片字节。全部失败返回 \"\"。"""
     if not images:
         return ""
+    # 整条降级链共用一个 deadline，阶段之间只吃剩下的时间
+    budget = float(cfg.get("vision_total_budget_sec", 12) or 12)
+    deadline = time.time() + budget
     # 顺序：WB 池（快、不限流）→ 框架 provider（Gemini）→ 直连 Gemini
-    via_wb = await _describe_wb(images, cfg, logger=logger)
+    via_wb = await _describe_wb(images, cfg, logger=logger, deadline=deadline)
     if via_wb:
         return via_wb
-    via_fw = await _describe_via_framework(images, cfg, logger=logger)
+    via_fw = await _describe_via_framework(images, cfg, logger=logger, deadline=deadline)
     if via_fw:
         return via_fw
     key, src = resolve_key(cfg)
@@ -643,7 +654,11 @@ async def _describe_raw(images: list[bytes], cfg: dict, logger=None) -> str:
         ordered.remove(_preferred["model"])
         ordered.insert(0, _preferred["model"])
 
-    budget = float(cfg.get("vision_total_budget_sec", 12) or 12)
+    budget = max(0.0, deadline - time.time())
+    if budget <= 0.5:
+        if logger:
+            logger.warning("[fish] 视觉放弃：总预算已用完，直连不试了")
+        return ""
     started = time.time()
     # 整条降级链共用一个会话：每次重开 ClientSession 既慢又容易在异常路径上漏关闭
     session = _get_session()
@@ -690,6 +705,14 @@ async def describe(images_b64: list[str], cfg: dict, logger=None) -> str:
     for i, b64 in enumerate(images_b64[:max_images], 1):
         if not b64:
             failed += 1
+            continue
+        # 先按 base64 长度估算原始体积再解码：实测 17MB 的图照样解出来送去识别，
+        # 白白多花 3.8 秒，还占着视觉预算把后面的图挤没
+        if len(b64) * 3 // 4 > MAX_IMAGE_BYTES:
+            failed += 1
+            if logger:
+                logger.warning("[fish] 视觉跳过第 %d 张：约 %.1fMB 超过上限 %.1fMB",
+                               i, len(b64) * 3 / 4 / 1048576, MAX_IMAGE_BYTES / 1048576)
             continue
         try:
             raws.append(base64.b64decode(b64))
@@ -738,4 +761,6 @@ async def from_components(components: list, cfg: dict, logger=None) -> str:
         return ""
     if skipped and logger:
         logger.info("[fish] 视觉：拿到 %d 张，跳过 %d 张", len(raws), skipped)
-    return await _describe_raw(raws, cfg, logger=logger)
+    # 和 describe() 走同一套清洗：实测同一份脏输入，describe 返 ''，
+    # from_components 原样返回「…This is a template」这种提示词残留，直接进了提示词
+    return _clean_desc(await _describe_raw(raws, cfg, logger=logger))
