@@ -285,7 +285,9 @@ def judge(*, text: str = "", at_uids: Iterable[str] = (), reply_uid: str = "",
     # 线程压制：来回两次以上才算「两人在聊」。一次交替（A说完B应一声）不算，
     # 那还是群聊常态；被 @ / 引用 / 唤醒拉进来时一律不压——人点名了必须应声
     partner, turns = thread
-    if partner and turns >= 2 and not (is_at or is_quote_bot or is_wake):
+    # 追问窗口同样豁免：鱼刚答完这人接着问，正是最该接的时候，
+    # 不能因为旁边还有两个人在聊就把分扣光
+    if partner and turns >= 2 and not (is_at or is_quote_bot or is_wake or is_follow):
         score -= P_THREAD
         why.append("A↔B在聊")
         if turns >= 3:

@@ -55,11 +55,76 @@ class RespondMixin:
         # 异常被框架吞掉但 result 原封不动留在原地，未清洗的原文（带 [PASS]、
         # 表情标签、超长、违禁词）就照原样发进群了——线上真发生过
         meta = event.get_extra("fish_pending")
+        # 打字延迟 + 过时重判：模型已经写完，但人情上还得「打字」几秒。
+        # 这几秒里群里换了话题就别发了——晚一句正确的废话，比早一句错的更伤
+        if not await self._typing_gate(event, meta):
+            return
         try:
             await self._decorate_impl(event)
         except Exception as e:
             logger.exception("[fish] 出口加工异常，走兜底清洗: %s", e)
             self._decorate_fallback(event, meta)
+
+    async def _typing_gate(self, event: AstrMessageEvent, meta) -> bool:
+        """出口前的最后一道：按字数等一会儿，再确认这句话还该不该发。
+
+        返回 True = 照常往下走（发送）；False = 已经处理完（清空结果 + stop）。
+        任何异常都按「照常发」处理：宁可多一句，也不能让一句正常回复卡死在这里。
+        """
+        turn = event.get_extra("fish_turn")
+        if not turn:
+            return True
+        try:
+            raw = ""
+            res = event.get_result()
+            if res and getattr(res, "chain", None):
+                raw = "".join(c.text for c in res.chain if isinstance(c, Plain))
+            gid = str(turn.get("gid") or (meta or {}).get("gid") or "")
+            if not raw.strip() or not gid:
+                return True
+            st = self._state(gid)
+            draft = generator.make_draft(
+                text=raw, now=time.time(), ver=int(turn.get("ver") or 0),
+                intent_id=int(turn.get("intent_id") or 0), mode=str(turn.get("mode") or ""),
+                priority=int(turn.get("prio") or 0), uid=str(turn.get("uid") or ""),
+                gid=gid, cfg=self.cfg)
+            # 草稿只留一份/群，后到的冲掉先到的（不做并行生成，两句话打架更难看）
+            generator.store(st, draft, logger=logger)
+            if draft.delay > 0:
+                await asyncio.sleep(draft.delay)
+            names = tuple(addressee.names_of(gid, str(event.get_self_id())))
+            if self.cfg.get("bot_nickname"):
+                names = names + (str(self.cfg.get("bot_nickname")),)
+            action, why = generator.revalidate(
+                draft, now=time.time(), ver=int(getattr(st, "msg_ver", 0) or 0),
+                dialogue=tuple(st.dialogue)[-20:], names=names, cfg=self.cfg)
+            draft.revalidate, draft.reason = action, why
+            generator.take(st)
+            logger.info("[fish][draft] 群 %s %s", gid, draft.log_line())
+            # 顺手挂到事件上：线上排障时能直接看到「这句为什么没发」，
+            # 模拟里也靠它把每一轮的延迟/重判结论对回场景上
+            event.set_extra("fish_draft_log", draft.log_line())
+            if action == generator.SEND:
+                event.set_extra("fish_turn", None)
+                return True
+            # 不发：清空结果并 stop。只清空不 stop 的话，框架看到「没发过 + 被@」
+            # 会拿默认人格再答一遍，群里就冒出一条不是它说的回复
+            try:
+                self._release_claim(st, (meta or {}).get("claim_tok"))
+            except Exception:
+                pass
+            event.set_result(MessageEventResult(chain=[]))
+            event.stop_event()
+            try:
+                self.log_event("skip", gid, str(raw)[:60],
+                               who=str((meta or {}).get("nick") or ""),
+                               why="打字延迟期间%s（%s）" % (action, why))
+            except Exception:
+                pass
+            return False
+        except Exception as e:
+            logger.warning("[fish] 打字延迟判定异常，按原样发：%s: %s", type(e).__name__, e)
+            return True
 
     def _decorate_fallback(self, event: AstrMessageEvent, meta) -> None:
         """出口异常时只做三件事：放回冷却位、PASS 检测、截断。宁可少说一句。"""

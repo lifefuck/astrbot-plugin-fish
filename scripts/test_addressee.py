@@ -72,6 +72,9 @@ sc("A↔B来回四轮", 0, text="笑死", thread=(Y, 4), last_bot_ts=1000.0, now
 sc("一次交替不压制", 30, text="嗯？", thread=(Y, 1), last_bot_ts=1000.0, now=1030.0)
 # 被 @ 拉进线程仍然要说：显式指向优先级高于线程压制
 sc("线程里被@照说", 100, is_at=True, text="鱼你看", thread=(Y, 4))
+# 追问窗口同理：鱼刚答完这人接着问，旁边有人聊天也不能把分扣光
+sc("论坛里追问不被压制", 60, is_follow=True, text="那再讲讲", thread=(Y, 4),
+   last_bot_ts=1000.0, now=1030.0)
 
 # ---------- record：别名学习 + 线程登记 + to_uid ----------
 A.reset()

@@ -380,6 +380,9 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             return
 
         st = self._state(gid)
+        # 版本号：每进一条群消息 +1。打字延迟醒来只比对这一个数，
+        # 就知道「等这几秒里群里有没有新动静」，不用去 diff 整个对话流
+        st.msg_ver = int(getattr(st, "msg_ver", 0) or 0) + 1
         now = time.time()
         has_image, has_media = self._has_media(event)
         is_at = self._is_at_bot(event)
@@ -774,6 +777,7 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         # @ / 唤醒 / 被骂 / 追问 / 主动插话都只是输入信号（优先级），
         # 密度、冷却、配额、判官、冷场退避全部由对象统一算，任何路径都不许绕过。
         from .fish_core import speak_decision as _sd
+        from .fish_core import scheduler as _sch_mod
 
         _link = bool(_URL_RE.search(text or ""))
         # 旁观态打分器只做「质量分 + 按人冷却 + 小时配额 + 复读」这几个信号，
@@ -838,6 +842,25 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         )
         _dec = _sd.decide(_sig, self.cfg)
         logger.info("[fish][sd] 群 %s %s", gid, _dec.log_line())
+        # 调度器：判定链说「能说」之后，再问一句「配不配说」。
+        # 默认不说，只有 @/引用/追问/卡话题/明确求助才进入候选，还要过发言率闸。
+        # 它不改优先级链本身——被点名一律 must，不吃发言率
+        _intent = _sch_mod.schedule(_sig, self.cfg, decision=_dec,
+                                     dialogue=tuple(st.dialogue)[-50:])
+        logger.info("[fish][sch] 群 %s %s", gid, _intent.log_line())
+        _rescued = False
+        if _intent.speak and not _dec.speak:
+            # 调度器翻案：一群人连着问没人答（卡话题）或明确求助时，允许它主动开口，
+            # 即便判定链认为「不是在跟鱼说」。翻案理由写进日志，事后能复查
+            logger.info("[fish] 群 %s 调度器翻案（%s）：%s", gid, _intent.reason,
+                        (text or "")[:30])
+            _dec = _sd.SpeakDecision(True, _intent.reason, mode=_intent.mode,
+                                     priority=_intent.priority)
+            _rescued = True
+        elif _dec.speak and not _intent.speak:
+            # 复用下面「不接」那条路：记 skip 事件、写记忆、必要时 stop_event
+            _dec = _sd.SpeakDecision(False, _intent.reason, mode=_dec.mode,
+                                     priority=_dec.priority)
         if not _dec.speak:
             logger.info("[fish] 群 %s 不接（%s）：%s", gid, _dec.reason, (text or "")[:30])
             self.log_event("skip", gid, (text or "")[:60], who=nick, why=_dec.reason)
@@ -878,7 +901,10 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         # 判官合并：没人点名时不再单独发一次小请求（那一次要 3~5 秒，而且
         # prompt 每轮都不同、缓存永远命不中），改成把「要不要开口」交给主模型，
         # 不想接就吐 [PASS]（出口已有 PASS 闸）。被 @ / 追问窗口里不许 PASS，照旧必回
-        _inline_judge = bool(self.cfg.get("judge_inline", True)) and not (is_at or forced or is_follow)
+        # 救场时同样不准 PASS：这时候群里正等人答，模型自己掂量「值不值得接」
+        # 十有八九掂量成不说，救场就白救了
+        _inline_judge = (bool(self.cfg.get("judge_inline", True))
+                         and not (is_at or forced or is_follow or _rescued))
         if _inline_judge:
             social_hint = ("【这条没人叫你】先掂量一下值不值得接：插进去只是废话、或者接不住，"
                            "就只输出 [PASS]，一个字都别多说；要接就一句话接住话头。")
@@ -1074,6 +1100,13 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             # 图里的内容不在 msgs 里，离题闸要靠它跟上下文对上（见 _decorate_impl 2.5 段）
             "vision": vision_desc,
             "claim_tok": _claim_tok,
+        })
+        # 生成器侧：记下这轮的意图与消息版本号，出口（on_decorate）醒来要拿它
+        # 比对「等我打完这几秒，群里是不是已经换了话题」
+        event.set_extra("fish_turn", {
+            "gid": gid, "uid": uid, "ts": now, "ver": st.msg_ver,
+            "intent_id": _intent.intent_id, "mode": _intent.mode,
+            "prio": _intent.priority, "tier": _intent.tier,
         })
         _ru = getattr(self, "_replied_uids", {}).setdefault(gid, [])
         _ru.append((now, uid))

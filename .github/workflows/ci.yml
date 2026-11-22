@@ -48,6 +48,12 @@ jobs:
       - name: 收件人判定表（谁在跟谁说话）
         run: python scripts/test_addressee.py
 
+      - name: 调度器（默认不说 + 发言率上限）
+        run: python scripts/test_scheduler.py
+
+      - name: 生成器（打字延迟 + 草稿重判）
+        run: python scripts/test_generator.py
+
       - name: 排版归一化（空格/换行/句号/感叹号）
         run: python scripts/test_typeset.py
 

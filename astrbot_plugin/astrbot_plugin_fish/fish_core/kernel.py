@@ -196,6 +196,9 @@ group_memes = _load("group_memes", "group_memes.py")
 typeset = _load("typeset", "typeset.py")
 # 收件人判定表：这条消息到底说给谁（@/引用 > 点名 > 接续 > 相邻 > 无信号）
 addressee = _load("addressee", "addressee.py")
+# 第 3 步：调度器（说不说 + 发言率）与生成器侧的打字延迟/草稿重判
+scheduler = _load("scheduler", "scheduler.py")
+generator = _load("generator", "generator.py")
 
 meme_gate = _load("meme_gate", "meme_gate.py")
 
@@ -316,6 +319,18 @@ DEFAULTS = {
     "addressee_thread_window_sec": 180,  # A↔B 线程多少秒没新消息算散场
     "addressee_topic_gap_sec": 60,     # 鱼说过话之后多少秒内算「同一段话口」
     "addressee_alias_enabled": True,   # 从 At 昵称/群名片学别名（不猜外号）
+    # —— 调度器（第 3 步）——
+    # 默认不说：没有 @/引用/追问/卡话题/明确求助就闭嘴。这是行为的总开关，
+    # 关掉就退回「判官给分就接」的旧口径
+    "scheduler_default_silent": True,
+    "rate_guard_enabled": True,        # 发言率闸（占比 + 连续 + 主动冷却）
+    "rate_window_sec": 600,            # 发言率统计窗口
+    "rate_window_msgs": 50,            # 窗口条数上限，先到者为准
+    "proactive_gap_sec": 90,           # 主动发言之后至少隔多久才允许下一次
+    # —— 打字延迟 ——
+    "typing_delay_enabled": True,
+    "typing_max_sec": 6.0,             # 延迟封顶，长段也不要让人等太久
+    "draft_ttl_sec": 25,               # 草稿最长存活时间，超了就不发
     # 发图：模型写 [看图:标签] 时去 pixiv 捞一张全年龄原图。cookie 留空就借
     # media_parser 那份（同一个号，两处各存一份迟早不同步）
     "pixiv_enabled": True,
@@ -647,6 +662,11 @@ class GroupState:
     last_msg_ts: float = 0.0
     last_bot_reply_ts: float = 0.0
     msgs_since_bot: int = 0
+    # 消息版本号：每进一条群消息 +1。打字延迟醒来只比对这一个数字就知道
+    # 「等这几秒里群里有没有新动静」，不用去 diff 整个对话流
+    msg_ver: int = 0
+    # 还没发出去的草稿（每群一份，后到的覆盖先到的）。只在内存，重启丢掉是对的
+    draft: dict = field(default_factory=dict)
     interject_times: deque = field(default_factory=lambda: deque(maxlen=40))
     # 免@追问窗口：被 @ 或被戳之后，这个人在几分钟内继续说话不用再 @。
     # 三个字段必须一起看：uid 决定「谁」还有特权，until 决定「到什么时候」，
@@ -765,4 +785,4 @@ def flatten_conf(raw: dict) -> dict:
     return flat
 
 
-__all__ = ["ToolSet", "_guess_lan_ip", "_URL_RE", "_ASK_OPINION_RE", "_REALTIME_RE", "_NO_SEARCH_RE", "_EXPLICIT_SEARCH_RE", "_VAGUE_Q", "_usage_of", "_search_query", "PLUGIN_DIR", "FISH_CORE", "DATA_DIR", "_warm_png_b64", "_WARM_PNG", "_load", "affect", "favor", "poke_context", "anti_template", "interject_planner", "style_learner", "meme_catalog", "group_memes", "typeset", "addressee", "meme_gate", "prompts", "composer", "quarrel", "insult_actions", "interject_score", "fish_memory", "splitter", "token_report", "token_card", "vision", "hearing", "pixiv", "_media_parser_pixiv_cookie", "meme_gen", "order_watch", "social_read", "peer_bots", "cross_memory", "panel_api", "admin_actions", "yunzai_link", "backup", "games", "fun_features", "connectors", "safety_guard", "cross_interaction", "memory_atoms", "meme_manager", "DEFAULTS", "MEME_PATH", "_noop", "_write_json", "_POKE_BACK_TS", "_pick_poke", "_BUILTIN_COMMANDS", "_SONG_INTENT_RE", "_SONG_STOP_WORDS", "_SEARCH_MARK_RE", "_SEARCH_LEFTOVER_RE", "_PIXIV_MARK_RE", "_PIXIV_LEFTOVER_RE", "_ImgRef", "_TAG_ONLY_RE", "_SONG_META_HEAD", "_SONG_META_CONTAINS", "_parse_song_request", "_MEME_ASK_RE", "_meme_ask_term", "_REPORT_RE", "_extract_report", "_TATTLE_RE", "_is_tattle_request", "_is_builtin_cmd", "_poke_back", "_ASK_FAVOR_RE", "_TECH_TOKEN_RE", "GroupState", "_poke_aimed_at_me", "_UNSET", "_handler_guard", "flatten_conf", "NO_TOOLS"]
+__all__ = ["ToolSet", "_guess_lan_ip", "_URL_RE", "_ASK_OPINION_RE", "_REALTIME_RE", "_NO_SEARCH_RE", "_EXPLICIT_SEARCH_RE", "_VAGUE_Q", "_usage_of", "_search_query", "PLUGIN_DIR", "FISH_CORE", "DATA_DIR", "_warm_png_b64", "_WARM_PNG", "_load", "affect", "favor", "poke_context", "anti_template", "interject_planner", "style_learner", "meme_catalog", "group_memes", "typeset", "addressee", "scheduler", "generator", "meme_gate", "prompts", "composer", "quarrel", "insult_actions", "interject_score", "fish_memory", "splitter", "token_report", "token_card", "vision", "hearing", "pixiv", "_media_parser_pixiv_cookie", "meme_gen", "order_watch", "social_read", "peer_bots", "cross_memory", "panel_api", "admin_actions", "yunzai_link", "backup", "games", "fun_features", "connectors", "safety_guard", "cross_interaction", "memory_atoms", "meme_manager", "DEFAULTS", "MEME_PATH", "_noop", "_write_json", "_POKE_BACK_TS", "_pick_poke", "_BUILTIN_COMMANDS", "_SONG_INTENT_RE", "_SONG_STOP_WORDS", "_SEARCH_MARK_RE", "_SEARCH_LEFTOVER_RE", "_PIXIV_MARK_RE", "_PIXIV_LEFTOVER_RE", "_ImgRef", "_TAG_ONLY_RE", "_SONG_META_HEAD", "_SONG_META_CONTAINS", "_parse_song_request", "_MEME_ASK_RE", "_meme_ask_term", "_REPORT_RE", "_extract_report", "_TATTLE_RE", "_is_tattle_request", "_is_builtin_cmd", "_poke_back", "_ASK_FAVOR_RE", "_TECH_TOKEN_RE", "GroupState", "_poke_aimed_at_me", "_UNSET", "_handler_guard", "flatten_conf", "NO_TOOLS"]
