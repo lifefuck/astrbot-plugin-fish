@@ -334,6 +334,11 @@ class MediaMixin:
                                     str(getattr(comp, "id", "")))
                 if qt:
                     parts.append(f"【他引用了{who or '某人'}的消息】{qt[:400]}")
+                else:
+                    # 内容彻底取不到（消息被撤回 / NapCat 重启丢了缓存）时必须明说：
+                    # 只留一个「[引用消息] 能看到吗」，模型会按最常见场景猜成图片，
+                    # 于是回一句「你说的哪张」——群里看着就像它瞎认
+                    parts.append(f"【他引用了{who or '某人'}的消息，内容没取到】")
             elif kind in ("forward", "nodes", "node"):
                 fid = str(getattr(comp, "id", "") or getattr(comp, "message_id", "") or "")
                 txt = await self._forward_text(event, fid)
