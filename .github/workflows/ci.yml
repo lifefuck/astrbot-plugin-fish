@@ -69,11 +69,17 @@ jobs:
       - name: 记忆纠错（改库/纠正记录/低置信度降级）
         run: python scripts/test_memory_correction.py
 
+      - name: 记忆 P0（衰减幂等/召回算激活/缓存不串人/纠错归属）
+        run: python scripts/test_memory_p0.py
+
       - name: 在场（什么算在场/配额/间隔）
         run: python scripts/test_presence.py
 
       - name: 排版归一化（空格/换行/句号/感叹号）
         run: python scripts/test_typeset.py
+
+      - name: 静默开关（/off 后 /on 必须能叫回来）
+        run: python scripts/test_mute_toggle.py
 
       - name: 自检（纯函数，不联网）
         run: python astrbot_plugin/astrbot_plugin_fish/scripts/selfcheck.py
