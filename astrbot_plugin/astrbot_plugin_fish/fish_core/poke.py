@@ -33,8 +33,6 @@ from .kernel import *  # noqa: F401,F403
 
 
 class PokeMixin:
-    @filter.event_message_type(EventMessageType.ALL)
-    @_handler_guard
     async def on_poke(self, event: AstrMessageEvent):
         """戳一戳必须自己接，不能交给原生流程。
 

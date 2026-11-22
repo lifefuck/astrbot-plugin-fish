@@ -48,7 +48,8 @@ def _pick_meme(tag: str, text: str = ""):
 
 
 class RespondMixin:
-    @filter.on_decorating_result()
+    # 装饰器统一挂在 main.py（Star 所在模块），这里只留实体：
+    # AstrBot 按 handler_module_path 查 star_map，mixin 模块查不到就被整条丢掉
     async def on_decorate(self, event: AstrMessageEvent):
         # 这个钩子是「最后一道出口」。以前没有任何兜底：任一子模块抛异常，
         # 异常被框架吞掉但 result 原封不动留在原地，未清洗的原文（带 [PASS]、
@@ -96,7 +97,6 @@ class RespondMixin:
             # 还会拿默认人格和默认 provider 再答一遍，群里就多出一条不是它说的回复
             event.stop_event()
 
-    @filter.on_llm_request()
     async def _mark_llm_t0(self, event: AstrMessageEvent, req):
         """记下请求发出的时刻：输出速度要用它算，框架不给我们时长。"""
         try:
@@ -104,7 +104,6 @@ class RespondMixin:
         except Exception:
             pass
 
-    @filter.on_llm_response()
     async def _log_cache(self, event: AstrMessageEvent, resp):
         """把每轮真实 token 和缓存命中记下来。
 
@@ -465,6 +464,13 @@ class RespondMixin:
             text = (text[:cut + 1] if cut > 30 else text[:cap]).strip()
             logger.info("[fish] 群 %s 回复 %d 字太长，砍到 %d 字", gid, before, len(text))
 
+        # 2.85 排版归一化：模型会在中文词之间莫名加空格、连敲两个换行，
+        # 群友一眼看出是机器。确定性清洗，不靠提示词（提示词保证不了）
+        try:
+            text = typeset.normalize(text)
+        except Exception as e:
+            logger.debug("[fish] 排版归一化失败：%s", e)
+
         # 2.9 技术复读闸：同一套步骤换个说法再讲一遍。回放里出现过连讲三遍
         # 「Shift+F10 → oobe\\bypassnro」，真人第二遍会说「刚说了啊」。
         # 只比英文/数字标识符，中文句子不进这套逻辑，避免误杀正常聊天
@@ -486,6 +492,7 @@ class RespondMixin:
         now = time.time()
         final = text
         parts = [final]
+        max_parts = int(self.cfg.get("split_max_parts", 3) or 3)
         if self.cfg.get("split_enabled", True):
             # 心境参与条数上限：情绪低落/犯困时只发两条，兴致高才三条。
             # 之前这里写死配置值，affect.profile() 算了却没人用，等于白算
@@ -500,6 +507,12 @@ class RespondMixin:
                 max_chars=int(self.cfg.get("split_max_chars", 26) or 26),
                 max_parts=max(1, max_parts),
             ) or [final]
+        # 拆条之后逐条收口：每条最多一个换行，10 字内去掉句尾句号，感叹号/表情各留一个。
+        # 这一步放在拆条之后：先切长度再修排版，切点才不会被换行挪位
+        try:
+            parts = typeset.finish_parts(parts, max_parts=max_parts) or [final]
+        except Exception as e:
+            logger.debug("[fish] 排版收口失败：%s", e)
         chain = [Plain(parts[0])]
         tail = parts[1:]
 
@@ -620,7 +633,6 @@ class RespondMixin:
         except Exception as e:
             logger.exception("[fish] 记账失败（消息已发出，不影响这轮）: %s", e)
 
-    @filter.after_message_sent()
     async def on_sent(self, event: AstrMessageEvent):
         # 先把 extra 全取走再动手：event.send 会再走一遍 after_message_sent，
         # 不先清空的话补发的那几条会被当成新回复重新处理，变成无限自我复制

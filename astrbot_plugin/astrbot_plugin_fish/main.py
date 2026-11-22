@@ -1150,3 +1150,52 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             tool_set=NO_TOOLS,
             prompt=user_prompt, system_prompt=system_prompt, contexts=_ctx_llm, image_urls=[]
         )
+
+    # ============ 钩子转发层（装饰器只能挂在 Star 所在模块）============
+    # AstrBot 取 handler 时用 star_map.get(handler_module_path) 过滤，star_map 里只有
+    # Star 子类所在的模块（本文件）。拆成 11 个 Mixin 之后，on_decorate / on_sent /
+    # on_poke / cmd_* 全部落在 fish_core/*.py 下，被静默过滤掉——[PASS] 原样进群、
+    # 排版清洗不生效、戳一戳不回、ab! 命令全哑，根因都是这一条。
+    # 所以装饰器统一回归本文件，实体仍留在各自 Mixin，避免以后再加钩子又踩一遍。
+
+    @filter.on_decorating_result()
+    async def on_decorate(self, event: AstrMessageEvent):
+        await RespondMixin.on_decorate(self, event)
+
+    @filter.on_llm_request()
+    async def _mark_llm_t0(self, event: AstrMessageEvent, req):
+        await RespondMixin._mark_llm_t0(self, event, req)
+
+    @filter.on_llm_response()
+    async def _log_cache(self, event: AstrMessageEvent, resp):
+        await RespondMixin._log_cache(self, event, resp)
+
+    @filter.after_message_sent()
+    async def on_sent(self, event: AstrMessageEvent):
+        await RespondMixin.on_sent(self, event)
+
+    @filter.event_message_type(EventMessageType.ALL)
+    @_handler_guard
+    async def on_poke(self, event: AstrMessageEvent):
+        async for _r in PokeMixin.on_poke(self, event):
+            yield _r
+
+    @filter.command("tocken", alias={"token", "用量", "token用量"})
+    async def cmd_tocken(self, event: AstrMessageEvent):
+        async for _r in CommandsMixin.cmd_tocken(self, event):
+            yield _r
+
+    @filter.command("off", alias={"静默"})
+    async def cmd_off(self, event: AstrMessageEvent):
+        async for _r in CommandsMixin.cmd_off(self, event):
+            yield _r
+
+    @filter.command("on", alias={"恢复"})
+    async def cmd_on(self, event: AstrMessageEvent):
+        async for _r in CommandsMixin.cmd_on(self, event):
+            yield _r
+
+    @filter.command("memes", alias={"reload_memes", "梗库"})
+    async def cmd_memes(self, event: AstrMessageEvent):
+        async for _r in CommandsMixin.cmd_memes(self, event):
+            yield _r

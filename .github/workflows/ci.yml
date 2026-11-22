@@ -36,6 +36,8 @@ jobs:
 
       - name: 顶层导出完整（拆分防丢）
         run: python scripts/check_exports.py
+      - name: 排版归一化（空格/换行/句号/感叹号）
+        run: python scripts/test_typeset.py
 
       - name: 自检（纯函数，不联网）
         run: python astrbot_plugin/astrbot_plugin_fish/scripts/selfcheck.py

@@ -33,7 +33,6 @@ from .kernel import *  # noqa: F401,F403
 
 
 class CommandsMixin:
-    @filter.command("tocken", alias={"token", "用量", "token用量"})
     async def cmd_tocken(self, event: AstrMessageEvent):
         """/tocken：token 用量账本。只给主人，免得群里谁都能查这只鱼的账单。"""
         # 别名里有 "token"，私聊里「token 超了怎么办」这种正常聊天会被当成指令吃掉，
@@ -74,7 +73,6 @@ class CommandsMixin:
                 logger.warning("[fish] /tocken 发图失败，退回文字版：%s", e)
         yield event.plain_result(token_report.render(st))
 
-    @filter.command("off", alias={"静默"})
     async def cmd_off(self, event: AstrMessageEvent):
         gid = self._gid_of(event)
         if not gid or not gid.isdigit():
@@ -100,7 +98,6 @@ class CommandsMixin:
         event.stop_event()
         yield event.plain_result("全关了，从现在起群里我就当没听见，发 /on 才回来")
 
-    @filter.command("on", alias={"恢复"})
     async def cmd_on(self, event: AstrMessageEvent):
         gid = self._gid_of(event)
         if not gid or not gid.isdigit():
@@ -141,7 +138,6 @@ class CommandsMixin:
         event.stop_event()
         yield event.plain_result("回来了，该说说该闹闹")
 
-    @filter.command("memes", alias={"reload_memes", "梗库"})
     async def cmd_memes(self, event: AstrMessageEvent):
         """手动重载热梗池和本群黑话，改完 json 不用重启 AstrBot。"""
         if not self._is_boss(event):
