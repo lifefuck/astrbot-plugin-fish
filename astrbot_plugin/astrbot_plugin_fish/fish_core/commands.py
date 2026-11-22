@@ -33,6 +33,34 @@ from .kernel import *  # noqa: F401,F403
 
 
 class CommandsMixin:
+    # 解除静默的说法。只放整词，不做前缀匹配：「on my way 马上到」这类正常聊天
+    # 不能被当成 /on，否则静默期间随便一句英文就能把群叫醒
+    _UNMUTE_TEXTS = {"on", "恢复", "开启", "解除静默", "unmute"}
+
+    def _is_unmute_cmd(self, event: AstrMessageEvent) -> bool:
+        """这句是不是在喊恢复。
+
+        静默分支必须放行它：cmd_on 是后注册的独立 handler，on_group 里一
+        stop_event，框架的 star_request 循环直接 break，cmd_on 永远轮不到，
+        静默就成了不可逆的（重启也救不回来，只能手改 group_muted.json）。
+        """
+        text = str(getattr(event, "message_str", "") or "").strip()
+        # 框架通常已经剥掉唤醒前缀；这里再削一遍斜杠/井号，兼容手动写的 /on
+        word = text.lstrip("/／#!！").strip()
+        return word in self._UNMUTE_TEXTS
+
+    async def muted_branch(self, event: AstrMessageEvent, gid: str):
+        """静默期间收到群消息：只有 /on 放行，其余一个字都不回。
+
+        stop_event 留给调用方（on_group）做，这里只管「要不要处理」——
+        把这段逻辑放在 Mixin 里而不是 main.py，是为了能在没有 astrbot 的
+        环境里跑回归（tests 自带最小桩）
+        """
+        if not self._is_unmute_cmd(event):
+            return
+        async for r in self.cmd_on(event):
+            yield r
+
     async def cmd_tocken(self, event: AstrMessageEvent):
         """/tocken：token 用量账本。只给主人，免得群里谁都能查这只鱼的账单。"""
         # 别名里有 "token"，私聊里「token 超了怎么办」这种正常聊天会被当成指令吃掉，

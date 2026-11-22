@@ -69,7 +69,9 @@ class PromptMixin:
                     fmt_when=self._fmt_mem_when, limit=2,
                     mode="active" if _req else "passive")
                 # 留一份给下一轮的纠正检测：他说「你记错了」时要能对上是哪条
-                self._last_recalled[str(gid)] = list(recalled or [])
+                # 按 (群, 人) 存：纠正检测只认「说话人自己看到的召回」，
+                # 否则群里 B 的一句否定会改到 A 的档案上
+                fish_memory.put_recalled(self._last_recalled, str(gid), str(uid), recalled)
             except Exception as e:
                 logger.warning("[fish] 记忆召回失败: %s", e)
 

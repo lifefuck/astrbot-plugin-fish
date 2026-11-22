@@ -83,8 +83,9 @@ ok("10 新条内容带更正后的数字", newrow and "三只" in newrow["conten
 low = E.add_memory(G, U, "他好像在做游戏相关的活", memory_type="event",
                    source_type="heard", confidence=0.45, anchor_text="好像在做游戏")
 with sqlite3.connect(_DB) as c:
-    c.execute("UPDATE fish_memory_records SET last_activated_at=? WHERE memory_id=?",
-              (time.time() - 40 * 86400, low["id"]))
+    # 衰减判据是 updated_at（同一条一天只降一次），这里把两个时间都推老
+    c.execute("UPDATE fish_memory_records SET last_activated_at=?, updated_at=? WHERE memory_id=?",
+              (time.time() - 40 * 86400, time.time() - 40 * 86400, low["id"]))
     c.commit()
 n = E.decay_low_confidence(days=30)
 with sqlite3.connect(_DB) as c:
@@ -94,8 +95,9 @@ ok("11 30 天没印证会被降权", n >= 1 and float(v) < 0.45, (n, v))
 
 # 降到 0.2 以下就软删（行还在，可人工捞回）
 with sqlite3.connect(_DB) as c:
-    c.execute("UPDATE fish_memory_records SET confidence=0.21, last_activated_at=? WHERE memory_id=?",
-              (time.time() - 40 * 86400, low["id"]))
+    c.execute("UPDATE fish_memory_records SET confidence=0.21, last_activated_at=?, updated_at=? "
+              "WHERE memory_id=?",
+              (time.time() - 40 * 86400, time.time() - 40 * 86400, low["id"]))
     c.commit()
 E.decay_low_confidence(days=30)
 with sqlite3.connect(_DB) as c:

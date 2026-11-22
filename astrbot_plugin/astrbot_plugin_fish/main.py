@@ -152,8 +152,9 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         # 本轮消息的出处（原文 id / 说给谁），按群存一份。_remember 有十来个调用点，
         # 逐个加参数迟早漏一个，统一从这里取
         self._mem_turn: dict[str, dict] = {}
-        # 上一轮喂给模型的记忆，纠正检测要拿它比对（按群存）
-        self._last_recalled: dict[str, list] = {}
+        # 上一轮喂给模型的记忆，纠正检测要拿它比对（按群+人存，见 fish_memory.put_recalled）
+        # 键是 (群号, QQ号)，值是 (时间戳, 召回条目)：纠正要认准谁的记忆，还要限时
+        self._last_recalled: dict[tuple, tuple] = {}
         # 同一张图只识一次：时间线回填和「要不要回这条」会各要一次描述
         self._vision_jobs: dict[str, asyncio.Task] = {}
         # 联网类能力共用一个 session，别每句话新建连接
@@ -302,6 +303,10 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         if self._is_muted(gid):
             # /off 之后群里说什么都当没听见：连时间线都不记，静默要真的静。
             # 这里必须 stop_event——不拦的话 AstrBot 自己的默认 LLM 还会接 @
+            # 但解除静默要留一条缝：cmd_on 是后注册的独立 handler，这里一 stop，
+            # star_request 循环就 break，cmd_on 永远轮不到 ⇒ 静默不可逆。
+            async for r in self.muted_branch(event, gid):
+                yield r
             event.stop_event()
             return
         # 戳一戳自己接。不能只 return：on_group 排在 on_poke 前面，
@@ -841,7 +846,7 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         # 等下一轮再改，群里已经多了一条坚持旧答案的回复
         if text and gid and self.cfg.get("memory_source_required", True):
             try:
-                _prev = self._last_recalled.get(str(gid)) or []
+                _prev = fish_memory.take_recalled(self._last_recalled, str(gid), str(uid))
                 _hit = self.memory.detect_correction(text, _prev)
                 if _hit:
                     _fix = self.memory.apply_correction(
@@ -850,7 +855,7 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
                     logger.info("[fish][mem][fix] 群 %s 纠正记忆 %s → 新条 %s",
                                 gid, str(_hit.get("id"))[:8], str(_fix.get("new"))[:8])
                     self.log_event("mem_fix", gid, text[:40], who=nick)
-                    self._last_recalled[str(gid)] = []
+                    fish_memory.drop_recalled(self._last_recalled, str(gid), str(uid))
             except Exception as e:
                 logger.warning("[fish] 纠正检测异常（不影响回话）：%s: %s", type(e).__name__, e)
 

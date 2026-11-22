@@ -30,6 +30,38 @@ DEFAULT_DB_PATH = os.environ.get("FISH_MEMORY_DB") or os.path.join(HERE, "..", "
 # 记账失败时会直接抛到调用方
 logger = logging.getLogger("astrbot_plugin_fish.memory")
 
+# 「上一轮召回给我看了哪几条」的缓存：纠正检测要在下一句话里对上是哪条。
+# 必须按 (群, 人) 分开存——只按群存的话，B 的一句「不是吧」会改到 A 的档案上
+RECALLED_TTL_SEC = 300.0
+
+
+def put_recalled(store: Dict, gid: str, uid: str, items, now: float = 0.0) -> None:
+    """记下这一轮召回的结果（带时间戳，取的时候要限时）。"""
+    store[(str(gid), str(uid))] = (float(now or time.time()), list(items or []))
+
+
+def take_recalled(store: Dict, gid: str, uid: str,
+                  ttl: float = RECALLED_TTL_SEC, now: float = 0.0) -> List[Dict]:
+    """取回「这个人上一轮看到的记忆」。超过 ttl 就当没有。
+
+    限时是必须的：半小时前召回的那条被一句「不是」命中，改的是老账，不是这句在说的事
+    """
+    key = (str(gid), str(uid))
+    rec = store.get(key)
+    if not rec:
+        return []
+    ts, items = rec
+    if float(now or time.time()) - float(ts) > float(ttl):
+        store.pop(key, None)
+        return []
+    return list(items or [])
+
+
+def drop_recalled(store: Dict, gid: str, uid: str) -> None:
+    """纠错用完就清，免得同一句否定连着命中两轮。"""
+    store.pop((str(gid), str(uid)), None)
+
+
 CJK = re.compile(r"[\u4e00-\u9fff]")
 NEG = re.compile(r"[不没别未无]")
 
@@ -651,7 +683,7 @@ class FishMemoryEngine:
             rows = conn.execute(
                 "SELECT memory_id, title, content, memory_type, importance, created_at, "
                 "last_activated_at, activation_count, addressee_nick, topic, anchor_mid, "
-                "anchor_text, source_type, confidence FROM fish_memory_records "
+                "anchor_text, source_type, confidence, person_id FROM fish_memory_records "
                 "WHERE group_id=? AND person_id=? AND is_deleted=0",
                 (group_id, person_id)
             ).fetchall()
@@ -720,6 +752,8 @@ class FishMemoryEngine:
                 "content": d["content"],
                 "type": d["memory_type"],
                 "score": score,
+                # 带上归属人：纠错要断言「这条到底是谁的」，不然会改到别人档案上
+                "person_id": d.get("person_id") or "",
                 # 谁在什么时候说的：拼进 prompt 时要用，不然模型会把旧事当现状
                 "created_at": d.get("created_at"),
                 "source_type": d.get("source_type") or "said",
@@ -731,7 +765,23 @@ class FishMemoryEngine:
             })
 
         results.sort(key=lambda x: x["score"], reverse=True)
-        return results[:top_k]
+        top = results[:top_k]
+        # 命中即算「真被用到」：刷新激活时间与计数。
+        # 以前只有 add_memory 的 merge 分支会写这两列，衰减任务看到的
+        # last_activated_at 永远是入库那天，于是天天被提起的记忆照样被当成
+        # 「没人再印证」一路降到软删（重启几次就把记忆清空的那种事故）
+        if top:
+            try:
+                with self._get_conn() as conn:
+                    conn.executemany(
+                        "UPDATE fish_memory_records SET last_activated_at=?, "
+                        "activation_count=activation_count+1 WHERE memory_id=?",
+                        [(now_ts, str(it["id"])) for it in top if it.get("id")],
+                    )
+                    conn.commit()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[fish][mem] 刷新激活时间失败：%s", e)
+        return top
 
     def record_turn(self, group_id: str, person_id: str, user_text: str, reply_text: str = "",
                     log: bool = True, anchor_mid: str = "", addressee_id: str = "",
@@ -986,6 +1036,12 @@ class FishMemoryEngine:
     def apply_correction(self, group_id: str, person_id: str, old: Dict,
                          new_text: str, by_uid: str = "", anchor_mid: str = "") -> Dict:
         """旧条作废 + 写纠正记录 + 按新原话重建一条。"""
+        # 归属断言：old 必须是这个人的条目。串档（拿到的是别人那轮的召回）
+        # 时改错档案比不改更糟——宁可这轮不纠错，也不能动别人的记忆
+        _owner = str((old or {}).get("person_id") or "")
+        if _owner and _owner != str(person_id):
+            logger.warning("[fish][mem] 纠错归属不符（%s → %s），放弃", _owner[:20], str(person_id)[:20])
+            return {}
         now_ts = time.time()
         old_id = str(old.get("id") or "")
         new_text = " ".join(str(new_text or "").split())
@@ -1018,8 +1074,11 @@ class FishMemoryEngine:
         cut = now_ts - days * 86400
         with self._get_conn() as conn:
             n = conn.execute(
+                # 判据用 updated_at 而不是 last_activated_at：衰减本身会写 updated_at，
+                # 于是「同一条一天只降一次」是天然的；用 last_activated_at 判等于
+                # 每次进程启动都给同一批再打一次折（一天重启五次就降五档 → 全被清空）
                 "UPDATE fish_memory_records SET confidence=MAX(0.0, confidence*?), updated_at=? "
-                "WHERE is_deleted=0 AND confidence<0.5 AND last_activated_at<?",
+                "WHERE is_deleted=0 AND confidence<0.5 AND updated_at<?",
                 (factor, now_ts, cut)
             ).rowcount
             conn.execute(
