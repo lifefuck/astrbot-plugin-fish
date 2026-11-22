@@ -151,6 +151,26 @@ def main():
                          CFG, decision=dec(False, reason="收件人不是鱼（0 @别人）"), dialogue=rows)
         case("6e @别人时卡话题不翻案", not r.speak and "别人" in r.reason, r.log_line())
 
+        # 6f 什么都不值得说时，在场兜底：给个表情，不说话
+        r = SCH.schedule(sig(text="哈哈哈哈"), CFG, decision=dec(False, reason="没人叫鱼"),
+                         dialogue=dlg(("222", NOW - 20, "哈哈哈哈", False)),
+                         present=("接梗", "草"))
+        case("6f 无触发时在场兜底", r.speak and r.tier == "present" and r.trigger == "接梗",
+             r.log_line())
+
+        # 6g 判定链判成「说的是别人」时，在场也不许出声（这是在跟人对话，不是凑热闹）
+        r = SCH.schedule(sig(text="哈哈哈哈"), CFG,
+                         decision=dec(False, reason="说的是别人（时间线）"),
+                         dialogue=dlg(("222", NOW - 20, "哈哈哈哈", False)),
+                         present=("接梗", "草"))
+        case("6g 说给别人时不上场", (not r.speak) and "别人" in r.reason, r.log_line())
+
+        # 6h 被禁言/关闭时不靠在场绕过去
+        r = SCH.schedule(sig(text="哈哈哈哈"), CFG, decision=dec(False, reason="已 /off"),
+                         dialogue=dlg(("222", NOW - 20, "哈哈哈哈", False)),
+                         present=("接梗", "草"))
+        case("6h 关掉后连在场都不发", (not r.speak) and "/off" in r.reason, r.log_line())
+
         # 7 明确求助 + 45 → maybe
         rows2 = dlg(("222", NOW - 40, "这报错咋办", False))
         r = SCH.schedule(sig(text="这报错咋办", addressee_score=45), CFG,

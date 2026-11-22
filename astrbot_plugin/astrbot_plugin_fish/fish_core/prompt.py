@@ -82,6 +82,20 @@ class PromptMixin:
                 logger.debug("[fish] 取好感分失败：%s", e)
         if favor_memo:
             affect_parts.append(favor_memo)
+        # 调侃许可：好感分只说明「他最近对鱼怎么样」，说明不了「能不能拿他开玩笑」。
+        # 新人和熟人都是 50 分，但只有后者经得起挤对。三级各一句，不堆
+        if not is_private and not _is_owner and self.cfg.get("tease_guard_enabled", True):
+            try:
+                _fz = favor.score(gid, uid)
+                _tm = tease.memo(gid, uid, _fz, self.cfg)
+                # 自嘲还有次数限制：一小时一次，用完了这轮就别再自嘲，免得变成口头禅
+                if tease.level(gid, uid, _fz, self.cfg) >= tease.LEVEL_LOW and \
+                        not tease.allow_self_tease(gid, self.cfg):
+                    _tm += "（这会儿别再拿自己开涮了，刚开过。）"
+                if _tm:
+                    affect_parts.append(_tm)
+            except Exception as e:
+                logger.debug("[fish] 调侃许可注入失败：%s", e)
         # 主人频道：跟 owner 说话时的倾向排在好感分后面，压过任何「戒备/冷淡」。
         # 好感分算的是他最近对鱼怎么样，拿它对待做出的那个人，等于最熟的反倒最生分
         if _is_owner:

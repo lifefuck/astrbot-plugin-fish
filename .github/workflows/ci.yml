@@ -54,6 +54,15 @@ jobs:
       - name: 生成器（打字延迟 + 草稿重判）
         run: python scripts/test_generator.py
 
+      - name: 调侃许可（三级/升降/ban/自嘲去重/禁区）
+        run: python scripts/test_tease.py
+
+      - name: 骂战分级（无指向的阴阳词不升级）
+        run: python scripts/test_quarrel.py
+
+      - name: 在场（什么算在场/配额/间隔）
+        run: python scripts/test_presence.py
+
       - name: 排版归一化（空格/换行/句号/感叹号）
         run: python scripts/test_typeset.py
 

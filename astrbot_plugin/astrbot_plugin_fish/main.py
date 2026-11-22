@@ -93,6 +93,11 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         affect.attach(writer=_write_json, path=str(DATA_DIR / "affect_state.json"))
         # 好感度：每群每人一个长期分，和心境分开存，别互相污染
         favor.attach(writer=_write_json, path=str(DATA_DIR / "favor_state.json"))
+        # 调侃许可：按人按群记「能不能被挤对」「还能不能自嘲」，ban 落盘不清零
+        try:
+            tease.attach(writer=_write_json, path=str(DATA_DIR / "tease_license.json"))
+        except Exception as e:
+            logger.warning("[fish] 调侃许可加载失败：%s", e)
         # 主人在所有群锁满分：他骂模型、骂程序、骂鱼都是日常，好感分跟着掉
         # 只会让最熟的人被冷处理。配置 owner_favor_lock 可以改这个数
         _lock_owner = str(self.cfg.get("owner_qq") or "").strip()
@@ -840,13 +845,34 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             muted=bool((is_at or forced) and not self.cfg.get("reply_when_at", True)),
             banned=bool(getattr(st, "banned", False)),
         )
+        # 调侃许可记账：拒绝词当场降级并记 30 天，正常接话慢慢升级。
+        # 纯本地规则，不调模型；主人不参与（跟主人不用讲分寸）
+        if self.cfg.get("tease_guard_enabled", True) \
+                and str(uid) != str(self.cfg.get("owner_qq") or "").strip():
+            try:
+                if tease.refuse(gid, uid, text, cfg=self.cfg):
+                    logger.info("[fish] 群 %s %s 明确拒绝调侃，许可归零并记 %.0f 天",
+                                gid, uid, float(self.cfg.get("tease_ban_days", 30) or 30))
+                else:
+                    tease.note_interaction(gid, uid, text,
+                                           favor_score=favor.score(gid, uid), cfg=self.cfg)
+            except Exception as e:
+                logger.debug("[fish] 许可记账失败：%s", e)
         _dec = _sd.decide(_sig, self.cfg)
         logger.info("[fish][sd] 群 %s %s", gid, _dec.log_line())
         # 调度器：判定链说「能说」之后，再问一句「配不配说」。
         # 默认不说，只有 @/引用/追问/卡话题/明确求助才进入候选，还要过发言率闸。
         # 它不改优先级链本身——被点名一律 must，不吃发言率
+        # 在场：不需要回答但值得有个反应的消息（群里在笑/在摆烂/在抛梗）。
+        # 判定和配额都在 presence 里，调度器只负责把它排到「什么都不说」之后
+        _present = None
+        if self.cfg.get("presence_enabled", True):
+            try:
+                _present = presence.try_present(gid, _sig, tuple(st.dialogue)[-6:], self.cfg)
+            except Exception as e:
+                logger.debug("[fish] 在场判定失败：%s", e)
         _intent = _sch_mod.schedule(_sig, self.cfg, decision=_dec,
-                                     dialogue=tuple(st.dialogue)[-50:])
+                                     dialogue=tuple(st.dialogue)[-50:], present=_present)
         logger.info("[fish][sch] 群 %s %s", gid, _intent.log_line())
         _rescued = False
         if _intent.speak and not _dec.speak:
@@ -869,6 +895,11 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             if _dec.reason.startswith("已 /off"):
                 event.stop_event()
             return
+        # 在场：只丢一张表情或一个短词。不调模型、不占主动发言配额，
+        # 也不记成「鱼说了一轮」——它不是接话，是在场
+        if str(getattr(_intent, "tier", "")) == _sch_mod.TIER_PRESENT:
+            if await self._send_presence(event, gid, _intent, nick, uid):
+                return
         reason = _dec.reason
 
         # 到这儿这条已经确定要回：先开追问窗口，再占住冷却位。

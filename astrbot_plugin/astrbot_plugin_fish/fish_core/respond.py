@@ -65,7 +65,39 @@ class RespondMixin:
             logger.exception("[fish] 出口加工异常，走兜底清洗: %s", e)
             self._decorate_fallback(event, meta)
 
-    async def _typing_gate(self, event: AstrMessageEvent, meta) -> bool:
+    async def _send_presence(self, event, gid: str, intent, nick: str = "",
+                             uid: str = "") -> bool:
+        """在场反应：一张表情，挑不到图就一个短词。不调主模型、不记成发言轮次。
+
+        为什么不记轮次：发言率闸算的是「鱼说了几轮」，在场只是「嗯」一下，
+        算进去会让真实回复被自己的表情挤掉，群里就变成只会发表情不会说话。
+        """
+        scene = str(getattr(intent, "trigger", "") or "接梗")
+        short = str((getattr(intent, "stats", None) or {}).get("short") or "")
+        b64 = None
+        try:
+            if self.cfg.get("meme_enabled", True):
+                b64 = meme_catalog.pick_scene_b64(scene, "")
+        except Exception as e:
+            logger.debug("[fish] 在场挑图失败：%s", e)
+        try:
+            if b64:
+                presence.mark(gid, "[在场:%s]" % scene)
+                self.log_event("presence", gid, "[在场:%s]" % scene, who=nick,
+                               why=getattr(intent, "reason", ""))
+                event.set_result(MessageEventResult(chain=[Image.fromBase64(b64)]))
+                return True
+            if short:
+                presence.mark(gid, short)
+                self.log_event("presence", gid, short, who=nick,
+                               why=getattr(intent, "reason", ""))
+                event.set_result(MessageEventResult(chain=[Plain(short)]))
+                return True
+        except Exception as e:
+            logger.debug("[fish] 在场发送失败：%s", e)
+        return False
+
+    async def _typing_gate(self, event, meta) -> bool:
         """出口前的最后一道：按字数等一会儿，再确认这句话还该不该发。
 
         返回 True = 照常往下走（发送）；False = 已经处理完（清空结果 + stop）。
@@ -352,6 +384,27 @@ class RespondMixin:
             if text.strip():
                 text = quarrel.soften(text)
             text = self._strip_repeated_opener(st, text)
+            # 调侃许可的两道出口闸（不靠提示词，提示词保证不了）：
+            # ① 禁区属性兜底——外貌/性别/家里/工作能力，任何级别都不许出现
+            # ② 自嘲指纹去重——跟最近几句撞得太像就删掉那句，其余照发
+            if self.cfg.get("tease_guard_enabled", True) and text.strip():
+                _bad = tease.banned_attribute(text)
+                if _bad:
+                    logger.info("[fish] 群 %s 草稿碰到禁区（%s），整句不发：%r",
+                                gid, _bad, text[:30])
+                    self.log_event("tease_ban", gid, text[:40], who=meta.get("nick", ""))
+                    event.set_result(MessageEventResult(chain=[]))
+                    event.stop_event()
+                    self._release_claim(st, _tok)
+                    return
+                if tease.looks_like_self_tease(text):
+                    _keep, _drop = tease.strip_repeat_self_tease(gid, text)
+                    if _drop:
+                        logger.info("[fish] 群 %s 自嘲撞车，删掉那句：%r", gid, _drop[:30])
+                        self.log_event("tease_dup", gid, _drop[:40], who=meta.get("nick", ""))
+                        text = _keep
+                    if text.strip() and tease.allow_self_tease(gid, self.cfg):
+                        tease.note_self_tease(gid, text, tease.next_topic(gid))
             _gid_ts = str(meta.get("gid") or "")
             if _gid_ts:
                 self._last_bot_ts = {**getattr(self, "_last_bot_ts", {}), _gid_ts: time.time()}

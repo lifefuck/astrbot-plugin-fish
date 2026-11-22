@@ -32,6 +32,8 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 TIER_MUST = "must"
 TIER_MAYBE = "maybe"
 TIER_SILENT = "silent"
+# 在场：不说话，只给一张表情或一个短词。不算发言轮次，配额单独一套（见 presence.py）
+TIER_PRESENT = "present"
 
 # 求助/求解的措辞。「怎么办」这种既可能是自嘲也可能是求助，所以还要靠收件人分兜一层
 _HELP_RE = re.compile(
@@ -53,6 +55,14 @@ _ADD_MIN_HELP = 40
 _ADD_MIN_STALL = 30
 
 _SEQ = {"n": 0}
+
+# 在场也要让路的硬状态：这些不是「话多话少」，是根本不该出现
+_HARD_BLOCK = ("别的机器人", "已 /off", "被禁言", "说的是别人")
+
+
+def _hard_blocked(reason: str) -> bool:
+    r = str(reason or "")
+    return any(r.startswith(p) for p in _HARD_BLOCK)
 
 
 @dataclass
@@ -204,7 +214,8 @@ def rate_guard(rows: list, cfg: Optional[Dict[str, Any]]) -> Tuple[bool, str, Di
 
 
 def schedule(sig: Any, cfg: Optional[Dict[str, Any]] = None, *, decision: Any = None,
-             dialogue: Iterable[Dict[str, Any]] = ()) -> Intent:
+             dialogue: Iterable[Dict[str, Any]] = (),
+             present: Optional[Tuple[str, str]] = None) -> Intent:
     """调度总入口。
 
     decision 传 speak_decision.decide() 的结果（不传就自己算），这样优先级链、
@@ -258,6 +269,17 @@ def schedule(sig: Any, cfg: Optional[Dict[str, Any]] = None, *, decision: Any = 
             why = "求助但收件人 %d < %d" % (add, _ADD_MIN_HELP)
         else:
             why = stall_why
+        # 什么都不值得说的时候还有最后一档：在场。群里在笑、在摆烂、在抛梗，
+        # 不需要回答，但「嗯」一声比彻底消失好。产物是一张表情或一个短词，
+        # 不调模型，也不占说话的配额
+        # 在场不看「判定链让不让说话」：本来就不该说话的消息才轮得到在场。
+        # 只认四种硬拦（别的机器人/已关闭/被禁言/在跟别人说话），
+        # 其余理由（冷却、条数、质量分、冷场退避）都是「说话」的闸，跟在场无关
+        if present and not _hard_blocked(d.reason or ""):
+            scene, short = present[0], present[1]
+            return Intent(speak=True, tier=TIER_PRESENT, reason="在场·%s" % scene,
+                          mode=d.mode, priority=d.priority, intent_id=iid,
+                          trigger=scene, stats={"short": short})
         reason = d.reason if denied else "没有触发条件·默认不说（%s）" % why
         return Intent(speak=False, tier=TIER_SILENT, reason=reason,
                       mode=d.mode, priority=d.priority, intent_id=iid, trigger="-")

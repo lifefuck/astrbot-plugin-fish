@@ -198,6 +198,8 @@ typeset = _load("typeset", "typeset.py")
 addressee = _load("addressee", "addressee.py")
 # 第 3 步：调度器（说不说 + 发言率）与生成器侧的打字延迟/草稿重判
 scheduler = _load("scheduler", "scheduler.py")
+tease = _load("tease", "tease.py")
+presence = _load("presence", "presence.py")
 generator = _load("generator", "generator.py")
 
 meme_gate = _load("meme_gate", "meme_gate.py")
@@ -331,6 +333,19 @@ DEFAULTS = {
     "typing_delay_enabled": True,
     "typing_max_sec": 6.0,             # 延迟封顶，长段也不要让人等太久
     "draft_ttl_sec": 25,               # 草稿最长存活时间，超了就不发
+    # —— 调侃许可（第 4 步）——
+    # 三级：无许可只中性、低许可能自嘲、高许可能挤对行为。外貌/性别/家庭/工作能力
+    # 永远是禁区，跟级别无关
+    "tease_guard_enabled": True,
+    "tease_high_favor": 80,            # 好感到这个数直接给高许可
+    "tease_low_favor": 60,             # 到这个数给低许可
+    "tease_ban_days": 30,              # 被明确拒绝后多久不许再试（不随道歉/投喂缩短）
+    "self_tease_per_hour": 1,          # 自嘲每小时至多一次
+    # —— 在场（第 4 步）——
+    # 不需要回答但值得有反应的消息，只给一张表情或一个短词，不调模型
+    "presence_enabled": True,
+    "presence_gap_sec": 120,           # 两次在场之间至少隔多久
+    "presence_per_10min": 2,           # 10 分钟内最多几次
     # 发图：模型写 [看图:标签] 时去 pixiv 捞一张全年龄原图。cookie 留空就借
     # media_parser 那份（同一个号，两处各存一份迟早不同步）
     "pixiv_enabled": True,
@@ -785,4 +800,4 @@ def flatten_conf(raw: dict) -> dict:
     return flat
 
 
-__all__ = ["ToolSet", "_guess_lan_ip", "_URL_RE", "_ASK_OPINION_RE", "_REALTIME_RE", "_NO_SEARCH_RE", "_EXPLICIT_SEARCH_RE", "_VAGUE_Q", "_usage_of", "_search_query", "PLUGIN_DIR", "FISH_CORE", "DATA_DIR", "_warm_png_b64", "_WARM_PNG", "_load", "affect", "favor", "poke_context", "anti_template", "interject_planner", "style_learner", "meme_catalog", "group_memes", "typeset", "addressee", "scheduler", "generator", "meme_gate", "prompts", "composer", "quarrel", "insult_actions", "interject_score", "fish_memory", "splitter", "token_report", "token_card", "vision", "hearing", "pixiv", "_media_parser_pixiv_cookie", "meme_gen", "order_watch", "social_read", "peer_bots", "cross_memory", "panel_api", "admin_actions", "yunzai_link", "backup", "games", "fun_features", "connectors", "safety_guard", "cross_interaction", "memory_atoms", "meme_manager", "DEFAULTS", "MEME_PATH", "_noop", "_write_json", "_POKE_BACK_TS", "_pick_poke", "_BUILTIN_COMMANDS", "_SONG_INTENT_RE", "_SONG_STOP_WORDS", "_SEARCH_MARK_RE", "_SEARCH_LEFTOVER_RE", "_PIXIV_MARK_RE", "_PIXIV_LEFTOVER_RE", "_ImgRef", "_TAG_ONLY_RE", "_SONG_META_HEAD", "_SONG_META_CONTAINS", "_parse_song_request", "_MEME_ASK_RE", "_meme_ask_term", "_REPORT_RE", "_extract_report", "_TATTLE_RE", "_is_tattle_request", "_is_builtin_cmd", "_poke_back", "_ASK_FAVOR_RE", "_TECH_TOKEN_RE", "GroupState", "_poke_aimed_at_me", "_UNSET", "_handler_guard", "flatten_conf", "NO_TOOLS"]
+__all__ = ["ToolSet", "_guess_lan_ip", "_URL_RE", "_ASK_OPINION_RE", "_REALTIME_RE", "_NO_SEARCH_RE", "_EXPLICIT_SEARCH_RE", "_VAGUE_Q", "_usage_of", "_search_query", "PLUGIN_DIR", "FISH_CORE", "DATA_DIR", "_warm_png_b64", "_WARM_PNG", "_load", "affect", "favor", "poke_context", "anti_template", "interject_planner", "style_learner", "meme_catalog", "group_memes", "typeset", "addressee", "scheduler", "generator", "tease", "presence", "meme_gate", "prompts", "composer", "quarrel", "insult_actions", "interject_score", "fish_memory", "splitter", "token_report", "token_card", "vision", "hearing", "pixiv", "_media_parser_pixiv_cookie", "meme_gen", "order_watch", "social_read", "peer_bots", "cross_memory", "panel_api", "admin_actions", "yunzai_link", "backup", "games", "fun_features", "connectors", "safety_guard", "cross_interaction", "memory_atoms", "meme_manager", "DEFAULTS", "MEME_PATH", "_noop", "_write_json", "_POKE_BACK_TS", "_pick_poke", "_BUILTIN_COMMANDS", "_SONG_INTENT_RE", "_SONG_STOP_WORDS", "_SEARCH_MARK_RE", "_SEARCH_LEFTOVER_RE", "_PIXIV_MARK_RE", "_PIXIV_LEFTOVER_RE", "_ImgRef", "_TAG_ONLY_RE", "_SONG_META_HEAD", "_SONG_META_CONTAINS", "_parse_song_request", "_MEME_ASK_RE", "_meme_ask_term", "_REPORT_RE", "_extract_report", "_TATTLE_RE", "_is_tattle_request", "_is_builtin_cmd", "_poke_back", "_ASK_FAVOR_RE", "_TECH_TOKEN_RE", "GroupState", "_poke_aimed_at_me", "_UNSET", "_handler_guard", "flatten_conf", "NO_TOOLS"]

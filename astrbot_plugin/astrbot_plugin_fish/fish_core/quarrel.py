@@ -180,7 +180,10 @@ def classify(text: str, *, at_me: bool = False, mentions_owner: bool = False,
     if bite and (strong or "鱼" in low or (soft and consecutive)):
         return 2
 
-    if _has(_TAUNT, low) and (soft or consecutive):
+    # 二档必须真有指向（@它 / 叫外号 / 带「你」/ 带「鱼」）。
+    # 只靠 consecutive 撑不住：同一个人连发「哈哈哈哈」「笑死」也会 consecutive=True，
+    # 群里在笑就被判成阴阳鱼，鱼于是正经回一句——比不接更尴尬
+    if _has(_TAUNT, low) and (soft or "鱼" in low):
         return 2
 
     return 0
