@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """群里有人发图：拉下来交给视觉模型白描一句，拼进 prompt。
 
-默认先走 WB 池（wb/glm-5v-turbo → wb/minimax-m3.1-flash），Gemini 的框架
+默认先走 WB 池（wb/glm-5v-turbo → wb/minimax-m3），Gemini 的框架
 provider 和直连链只当兜底——Gemini 常年限流，指望它群聊会经常「瞎」。
 
 设计取舍：
@@ -388,6 +388,15 @@ async def component_bytes(comp, logger=None) -> bytes | None:
 # ---------------------------------------------------------------- 缩图 / 请求
 
 
+# 超过这个像素数就不识图了：decode 的峰值内存跟像素数成正比，
+# 字节数限流（8MB）根本拦不住高压缩的巨图
+_MAX_PIXELS = 40_000_000
+
+
+class _TooBig(Exception):
+    """图像像素数超过 _MAX_PIXELS，直接放弃识图而不是硬解。"""
+
+
 def _shrink(raw: bytes, max_side: int = 1280, quality: int = 88) -> tuple[bytes, str]:
     """缩图。PIL 不在时就原样发，别为了缩图把功能弄挂。
 
@@ -402,13 +411,30 @@ def _shrink(raw: bytes, max_side: int = 1280, quality: int = 88) -> tuple[bytes,
         return raw, "image/jpeg"
     try:
         im = PILImage.open(io.BytesIO(raw))
+        # 只读头就拿到尺寸：超大图在 decode 那一步能把内存顶到 1G+（实测
+        # 12000×12000 的 PNG 压完才 2.2M，峰值 RSS +1103M），所以先拦下来
+        _w, _h = im.size
+        if _w * _h > _MAX_PIXELS:
+            raise _TooBig("%dx%d" % (_w, _h))
         if getattr(im, "is_animated", False):
             im.seek(0)
-        im = im.convert("RGB")
+        # 透明底直接 convert("RGB") 会把透明像素当 (0,0,0)，贴纸/表情包整张变黑，
+        # 模型只能回「全黑」。先铺白底再合成
+        if im.mode in ("RGBA", "LA", "P"):
+            rgba = im.convert("RGBA")
+            bg = PILImage.new("RGB", rgba.size, (255, 255, 255))
+            bg.paste(rgba, mask=rgba.split()[-1])
+            im = bg
+        else:
+            im = im.convert("RGB")
         im.thumbnail((max_side, max_side))
         buf = io.BytesIO()
         im.save(buf, "JPEG", quality=quality)
         return buf.getvalue(), "image/jpeg"
+    except _TooBig:
+        # 必须先于 Exception 抛出：否则会被下面「缩不了就原样发」兜掉，
+        # 巨图照样进 base64，OOM 该来还是来
+        raise
     except Exception:
         return raw, "image/jpeg"
 
@@ -533,6 +559,9 @@ async def _describe_wb(images: list[bytes], cfg: dict, logger=None,
             continue
         try:
             imgs.append(await asyncio.to_thread(_shrink, raw))
+        except _TooBig as e:
+            if logger:
+                logger.warning("[fish] 图片 %s 像素过大，跳过识图", e)
         except Exception:
             imgs.append((raw, "image/jpeg"))
     if not imgs:
@@ -647,6 +676,10 @@ async def _describe_raw(images: list[bytes], cfg: dict, logger=None) -> str:
     for i, raw in enumerate(imgs, 1):
         try:
             small, mime = await asyncio.to_thread(_shrink, raw)
+        except _TooBig as e:
+            if logger:
+                logger.warning("[fish] 第 %d 张像素过大（%s），跳过", i, e)
+            continue
         except Exception as e:
             # 缩图失败不该整条放弃：原样发，让模型自己扛
             if logger:

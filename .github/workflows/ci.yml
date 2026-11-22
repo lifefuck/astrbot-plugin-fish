@@ -81,5 +81,8 @@ jobs:
       - name: 静默开关（/off 后 /on 必须能叫回来）
         run: python scripts/test_mute_toggle.py
 
+      - name: P1 回归（透明图/巨图/告状冷却/纠错阈值/印象落盘）
+        run: python scripts/test_p1_fixes.py
+
       - name: 自检（纯函数，不联网）
         run: python astrbot_plugin/astrbot_plugin_fish/scripts/selfcheck.py

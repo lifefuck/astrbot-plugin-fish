@@ -144,7 +144,10 @@ class PromptMixin:
                                 {"content": atom_text, "topic": fish_memory.topics_of(atom_text)},
                                 text or "")):
                         memory_lines.append(atom_text[:260])
-                if atoms != atoms_raw:
+                # apply_decay 返回的是新列表（淘汰过的），元素还是同一批 dict 且原地
+                # 刷新了 d/d_at；用 == 比较两个列表比的是元素内容，恒等 ⇒ 永远不落盘，
+                # 用得最多的印象照样被当没人用而衰减掉
+                if atoms is not atoms_raw:
                     self._atoms_all[f"{gid}:{uid}"] = atoms
                     self._save_atoms()
         except Exception as e:

@@ -66,9 +66,13 @@ case("引用我且@别人也接", True, "引用我", text="你看这个",
 # 14.7 收件人闸：旁听了两个人聊天，无指向证据 + 没质量分 -> 不插
 case("旁听两人聊天不插", False, "收件人不是鱼", text="哈哈哈哈", is_link=True,
      addressee_score=0, addressee_reason="A↔B在聊")
-# 14.8 灰区（40–70）没有追问窗口：默认仍然不是
-case("灰区无追问不接", False, "收件人不是鱼", text="你们聊啥呢", is_link=True,
+# 14.8 灰区（40–70）没有追问窗口：交给判官裁决，过线就说。
+# 以前额外要求必须在追问窗口内，结果「话题相邻」这类强信号永远进不了灰区
+case("灰区无追问·判官过线则放行", True, "主动插话", text="你们聊啥呢", is_link=True,
      addressee_score=50, judge_score=0.82, addressee_reason="代词")
+# 14.8b 灰区 + 判官没过线：仍然不接
+case("灰区无追问·判官不过线不接", False, "收件人不是鱼", text="你们聊啥呢", is_link=True,
+     addressee_score=50, judge_score=0.30, addressee_reason="代词")
 # 14.9 灰区 + 追问窗口：放行（追问不装死）
 case("灰区追问放行", True, "追问", is_follow=True, text="那再讲讲",
      addressee_score=50, addressee_reason="追问窗口")

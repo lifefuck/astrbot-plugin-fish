@@ -197,7 +197,8 @@ def decide(sig: Signals, cfg: Optional[Dict[str, Any]] = None) -> SpeakDecision:
     # 优先级只回答「多该说」，不回答「是不是说给我」。两个人聊得正热时按话题相邻
     # 抢一句，比漏接更伤。被 @ / 引用 / 唤醒在优先级里已是 CALLED 且满分，拦不到它们；
     # 这道闸主要拦「话题相邻就想插嘴」和「@ 了别人还凑上去」。
-    # 灰区（gray ≤ 分 < hard）默认仍然不是，只有追问窗口内且判官过线才放。
+    # 灰区（gray ≤ 分 < hard）默认不是，由判官定：过线才放。以前额外要求必须在
+    # 追问窗口内，结果「话题相邻（S_NEAR）」这档分数再高也永远进不来。
     if cfg.get("addressee_guard_enabled", True) and prio < PRIO_CALLED and not abused_ok:
         hard = _cfg_num(cfg, "addressee_hard_threshold", 70, notes)
         gray = _cfg_num(cfg, "addressee_gray_threshold", 40, notes)
@@ -208,7 +209,7 @@ def decide(sig: Signals, cfg: Optional[Dict[str, Any]] = None) -> SpeakDecision:
             # 说不说交给主模型自判 [PASS]，这里再卡一刀等于把追问全掐死
             thr = sig.judge_threshold or _cfg_num(cfg, "judge_threshold", 0.48, notes)
             quality_ok = sig.judge_score is None or sig.judge_score >= thr
-            if not (sc >= gray and sig.is_follow and quality_ok):
+            if not (sc >= gray and quality_ok):
                 return SpeakDecision(
                     False, "收件人不是鱼（%d %s）" % (sc, sig.addressee_reason or "无信号"),
                     mode=mode, priority=prio, notes=notes)

@@ -276,8 +276,37 @@ class CommandsMixin:
         except Exception as e:
             logger.warning("[fish] 巡检群里提示没发出去：%s", e)
 
+    def _tattle_allowed(self, gid: str, uid: str, now: float) -> bool:
+        """告状转达的频率闸：每人 5 分钟一次、每群每小时 3 次。
+
+        每次转达 = 一次模型判定 + 一条私聊 + 一张证据卡，不设限的话任何人连发
+        五遍就能把接收人私聊刷满。返回 False 表示这次不转，调用方按「已处理」走。
+        """
+        log = getattr(self, "_tattle_log", None)
+        if log is None:
+            log = self._tattle_log = {}
+        if now - float(log.get("u:" + uid, 0.0)) < 300:
+            logger.info("[fish] 群 %s 用户 %s 告状太频，本轮不转", gid, uid[:8])
+            return False
+        gkey = "g:" + gid
+        stamps = [t for t in (log.get(gkey) or []) if now - float(t) < 3600]
+        if len(stamps) >= 3:
+            logger.info("[fish] 群 %s 一小时内告状已达 3 次，本轮不转", gid)
+            log[gkey] = stamps
+            return False
+        log["u:" + uid] = now
+        log[gkey] = stamps + [now]
+        return True
+
     async def _try_tattle(self, event, text: str) -> bool:
-        """群友说要告状，就把原话私发给配置里的接收人（群里不出声）。"""
+        """群友说要告状，就把原话私发给配置里的接收人（群里不出声）。
+
+        带冷却：每次转达都是一条模型判定 + 一条私聊 + 一张证据卡，不设限的话
+        任何群员连发五遍就能把主人私聊刷满
+        """
+        gid, uid = str(event.get_group_id() or ""), str(event.get_sender_id() or "")
+        if not self._tattle_allowed(gid, uid, time.time()):
+            return True
         inst = self._tattle_plugin()
         if inst is None:
             return False

@@ -721,7 +721,10 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         # ---------------- 解析外包给 media_parser 时的闭嘴闸 ----------------
         # 光贴链接是在「分享」，不是找它说话；以前它会接一句「我看不了视频」，
         # 等于主动自曝短板。带评价词（「你觉得呢」）的照旧交给模型。
-        if text and gid and _URL_RE.search(text) and not _ASK_OPINION_RE.search(text):
+        # 但「被点名 + 贴链接」是在跟它说话（@它看个视频、引用它的话补个链接），
+        # 以前一律早退，整条消息被吞，一个字都不回
+        if (text and gid and _URL_RE.search(text) and not _ASK_OPINION_RE.search(text)
+                and not (is_at or forced or is_quote_bot or is_follow)):
             logger.info("[fish] 群 %s 链接消息，交给解析插件，不接话", gid)
             event.stop_event()
             return

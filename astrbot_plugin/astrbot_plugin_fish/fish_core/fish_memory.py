@@ -1004,6 +1004,8 @@ class FishMemoryEngine:
         return best, gist
 
     # ---------------- 纠正与降级 ----------------
+    # 虚词：凑数用的，不能算「说话人在改的内容」
+    _STOP_CHARS = set("的了着过是在有就也都我还你他她它们这那哪不没很太更最和与或啊吧呢吗呀哦嗯个次点些")
     _CORRECT_RE = re.compile(r"不是(这样|这个|那只|那个)?|我说的是|你记错|记错了|我没说过|"
                              r"我说过(吗|么)|别瞎记|不对[，,]?我")
 
@@ -1024,12 +1026,13 @@ class FishMemoryEngine:
                 best, best_sim = item, sim
         if best is not None and best_sim >= threshold:
             return best
-        # 句子短、改的数字（两只→三只）时 Jaccard 会被拉低，退一步看共享实词
+        # 句子短、改的内容（杭州→苏州、两只→三只）时 Jaccard 会被拉低，退一步看共享实词。
+        # 但「共享 2 个字」必须扣掉虚词：以前 text「不是吧」和「他不是很喜欢上班」
+        # 光靠「不」「是」两个字就能凑够 2，于是整句被当改口、0.9 写进档案
         for item in recalled:
             shared = {c for c in str(item.get("content") or "") if CJK.match(c)} & \
                      {c for c in t if CJK.match(c)}
-            # 2 个字就够：「两只→三只」这种改口，共享的往往只有量词和旧数字
-            if len(shared) >= 2:
+            if len(shared - _STOP_CHARS) >= 2:
                 return item
         return None
 

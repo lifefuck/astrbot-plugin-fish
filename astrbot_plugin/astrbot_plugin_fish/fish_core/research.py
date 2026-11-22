@@ -51,6 +51,7 @@ _ROUND_MAX = 2              # 最多几轮工具调用（实测 4 轮 = 123 秒�
 _TOTAL_SEC = 45.0           # 整个检索过程的上限，超了就拿现有材料收尾
 # 单次工具调用上限，按类型分：搜索本身就要 6~9 秒（实测 duckduckgo 8.4s），
 # 一个统一 9 秒会把正常搜索砍成超时；读页卡住则没必要等那么久
+_FINAL_SEC = 20.0          # 收尾「就着手上的材料直接答」的上限
 _TOOL_SEC_SEARCH = 14.0
 _TOOL_SEC_FETCH = 8.0
 _LLM_SEC = 32.0             # 单轮模型调用上限
@@ -327,8 +328,10 @@ async def run(question: str, *, provider: Any, http: Any, proxy: str | None = No
             try:
                 return str(await asyncio.wait_for(fn(**kw), timeout=tmo))
             except asyncio.TimeoutError:
-                logger.info("[fish] 工具 %s 超时（%.0fs），跳过", name, tmo)
-                return ""
+                # 不能返回空串：调用方把空当「没结果」直接丢掉，模型既拿不到
+                # 内容也不知道失败，只能再搜一遍或者凭记忆编
+                logger.info("[fish] 工具 %s 超时（%.0fs），已告知模型", name, tmo)
+                return f"（{name} 超时 {tmo:.0f} 秒，没拿到内容；别重复调用，换来源或直接说没查到）"
             except Exception as e:  # noqa: BLE001
                 return f"工具出错：{e}"
 
@@ -356,10 +359,15 @@ async def run(question: str, *, provider: Any, http: Any, proxy: str | None = No
     if not text:
         # 循环用完了还没落笔：让模型就着手上的材料直接答，别再要工具
         try:
-            resp = await provider.text_chat(
-                prompt="就用手上已经查到的内容直接回答，不要再查。查不到的部分明确说没查到。",
-                system_prompt=RESEARCH_SYSTEM,
-                contexts=contexts,
+            # 收尾也要有超时：这轮 40 秒的空等就是这么来的（轮内都包了 wait_for，
+            # 唯独最后这一下裸 await）
+            resp = await asyncio.wait_for(
+                provider.text_chat(
+                    prompt="就用手上已经查到的内容直接回答，不要再查。查不到的部分明确说没查到。",
+                    system_prompt=RESEARCH_SYSTEM,
+                    contexts=contexts,
+                ),
+                timeout=_FINAL_SEC,
             )
             text = (getattr(resp, "completion_text", "") or "").strip()
         except Exception as e:

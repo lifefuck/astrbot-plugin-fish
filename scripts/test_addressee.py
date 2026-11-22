@@ -57,7 +57,7 @@ sc("代词·鱼一小时前说过", 0, text="你怎么看", last_bot_ts=1000.0, 
 sc("追问窗口", 60, text="那再讲讲", is_follow=True, last_bot_ts=1000.0, now=5000.0)
 
 # ---------- L4 相邻 ----------
-sc("鱼刚说过(30s)", 30, text="嗯？", last_bot_ts=1000.0, now=1030.0)
+sc("鱼刚说过(30s)", 45, text="嗯？", last_bot_ts=1000.0, now=1030.0)
 sc("鱼一分钟前说过", 0, text="嗯？", last_bot_ts=1000.0, now=1200.0)
 
 # ---------- 反向扣分 ----------
@@ -66,10 +66,11 @@ sc("被@且@别人+引用别人", 0, is_at=True, text="你看这个", at_uids=("
 sc("点名但@别人", 10, text="鲸宝你看", bot_names=("鲸宝",), at_uids=("999",))
 
 # ---------- 活跃线程 ----------
-sc("A↔B线程里鱼不抢", 0, text="哈哈哈哈", thread=(Y, 2), last_bot_ts=1000.0, now=1030.0)
+# 45 - 40 = 5，仍远低于灰区下限 40，照样不接
+sc("A↔B线程里鱼不抢", 5, text="哈哈哈哈", thread=(Y, 2), last_bot_ts=1000.0, now=1030.0)
 sc("A↔B来回四轮", 0, text="笑死", thread=(Y, 4), last_bot_ts=1000.0, now=1030.0)
 # 一次交替（A说完B应一声）还是群聊常态，不算线程，不压
-sc("一次交替不压制", 30, text="嗯？", thread=(Y, 1), last_bot_ts=1000.0, now=1030.0)
+sc("一次交替不压制", 45, text="嗯？", thread=(Y, 1), last_bot_ts=1000.0, now=1030.0)
 # 被 @ 拉进线程仍然要说：显式指向优先级高于线程压制
 sc("线程里被@照说", 100, is_at=True, text="鱼你看", thread=(Y, 4))
 # 追问窗口同理：鱼刚答完这人接着问，旁边有人聊天也不能把分扣光
@@ -96,7 +97,7 @@ A.record(gid="g1", uid=Y, nick="乙", text="我觉得还行", now=1020.0, self_i
 check("甲乙成线程", A.thread_of("g1", X, 1021.0, 180, SELF), (Y, 1))
 s1, _ = A.judge(cfg=CFG, self_id=SELF, text="聊啥呢", now=1021.0,
                 last_bot_ts=1018.0, thread=A.thread_of("g1", X, 1021.0, 180, SELF))
-check("一轮不压（只剩相邻分）", s1, 30)
+check("一轮不压（只剩相邻分）", s1, 45)
 
 # 再来回一轮：2 轮，鱼插话被压到 0
 A.record(gid="g1", uid=X, nick="甲", text="那当然", now=1030.0, self_id=SELF, cfg=CFG)
