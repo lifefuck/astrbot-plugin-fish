@@ -15,3 +15,6 @@ astrbot_plugin/astrbot_plugin_fish/fish_core/meme-pack
 
 # 运行时数据（含 t2i 模板与临时文件），随部署目录走，不进版本库
 astrbot_plugin/astrbot_plugin_fish/fish_core/data/
+
+# 插件根目录下的运行时数据（cmd_config.json/temp/t2i 模板），不进版本库
+astrbot_plugin/astrbot_plugin_fish/data/

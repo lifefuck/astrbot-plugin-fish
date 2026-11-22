@@ -13,6 +13,15 @@ import random
 import re
 import time
 
+# kernel 用 importlib 按文件路径加载这些模块（sys.modules 里叫
+# astrbot_plugin_fish_prompts），所以这里不能再写相对导入：
+# 包内导入能用，按路径加载时就炸。统一走 sys.modules 取，取不到再退回相对导入
+import sys as _sys
+
+_prompts = _sys.modules.get("astrbot_plugin_fish_prompts")
+if _prompts is None:  # 以包的方式导入时走这条
+    from . import prompts as _prompts
+
 _STYLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "style_fewshot.json")
 _style_cache = {"mtime": 0.0, "data": []}
 
@@ -27,20 +36,9 @@ _AT_MENTION = re.compile(r"(^|[\s，,])[@＠][^\s，。！？、,.!?：:]{1,12}(
 # 断句符里必须带逗号：不加的话「我不是要艾特你，别误会」会连后半句一起删掉
 _AT_META_SENTENCE = re.compile(r"[^。！？!?\n，,、]{0,20}?(?:我)?(?:没有|没|不是)[^。！？!?\n，,、]{0,3}艾特[^。！？!?\n，,、]{0,20}[。！？!?]?")
 
-_GAME_WORDS = ("原神", "星铁", "崩铁", "绝区零", "鸣潮", "异环")
-_HOW_WORDS = ("怎么", "如何", "在哪", "哪里", "帮助")
-
-
-def needs_games_kb(text: str) -> bool:
-    """这句是不是在问云崽面板的用法（prompts.needs_games_kb 的薄封装）。"""
-    if not text:
-        return False
-    low = text.lower()
-    if any(w in low for w in ("绑定", "面板", "体力", "深渊", "剧透", "抽卡", "签到",
-                              "帮助", "菜单", "指令", "命令", "点歌", "锅巴", "云崽")):
-        return True
-    entity = any(g in low for g in _GAME_WORDS) or "云崽" in low or "yunzai" in low
-    return entity and any(w in low for w in _HOW_WORDS)
+# 判定逻辑只留 prompts.needs_games_kb 一份：这里原本各写一遍，
+# 两边的词表已经漂移（这边多「绑定/面板」，那边多「抽卡/深渊」），并成一份就不会再分叉。
+needs_games_kb = _prompts.needs_games_kb
 
 
 def style_samples_hint(group_id, limit: int = 3) -> str:

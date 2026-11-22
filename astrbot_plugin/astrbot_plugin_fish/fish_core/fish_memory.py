@@ -687,3 +687,42 @@ class FishMemoryEngine:
 
 # 单例实例
 fish_memory_engine = FishMemoryEngine()
+
+
+def shape_recalled(recalled, *, nick: str, text: str, fmt_when, limit: int = 2) -> list[str]:
+    """把召回结果整成 prompt 里的记忆行。
+
+    记忆去重只在这一处：召回、拼装两边各写一份，规则迟早分叉
+    （一边按子串、一边按二元组，同一句话就能在 prompt 里出现两遍）。
+    """
+    lines: list[str] = []
+    for item in recalled or []:
+        content = " ".join(str(item.get("content") or "").split())
+        # 刚说的那句也可能以近重形式被召回，别让模型看到自己刚说的话
+        if not content or content in text or text in content:
+            continue
+        # 记忆是按「一条 QQ 消息」存的，人常一句话拆成七八条发；
+        # 碎片原样塞进 prompt 会拼成一坨读不通的长句
+        if len(content) < 10 or content[-1] in "，、,（(":
+            continue
+        if len(content) > 60:
+            cut = max(content.rfind("，", 0, 60), content.rfind("；", 0, 60),
+                      content.rfind("。", 0, 60))
+            content = content[:cut + 1] if cut >= 20 else content[:60] + "…"
+        # 同一段话被拆成好几条发时，库里会同时存「前缀碎片」和「长句」，
+        # 两条都塞进去就是叠字：留长的，短的让位
+        dup = [m for m in lines if content in m or m in content]
+        if dup:
+            for i, m in enumerate(lines):
+                if m in content and len(m) < len(content):
+                    lines[i] = content
+            continue
+        # 只给一句话，模型分不清是「他刚说的」还是「上个月别人说的」，
+        # 会拿旧事当现状答；带上说话人和时间它才知道该不该引用
+        _who = nick or "他"
+        _when = fmt_when(item.get("created_at") or item.get("ts"))
+        lines.append(f"{_who}（{_when}）说过：{content}" if _when
+                     else f"{_who}说过：{content}")
+        if len(lines) >= limit:    # 给太多反而更乱，两条够了
+            break
+    return lines
