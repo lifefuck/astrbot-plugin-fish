@@ -45,6 +45,9 @@ jobs:
       - name: 开口判定行为测试
         run: python scripts/test_speak_decision.py
 
+      - name: 收件人判定表（谁在跟谁说话）
+        run: python scripts/test_addressee.py
+
       - name: 排版归一化（空格/换行/句号/感叹号）
         run: python scripts/test_typeset.py
 

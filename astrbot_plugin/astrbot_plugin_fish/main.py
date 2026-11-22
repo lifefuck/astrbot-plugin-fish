@@ -120,6 +120,12 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             self.memes.load_group_slang()
         except Exception as e:
             logger.warning("[fish] 热梗池载入失败：%s", e)
+        # 收件人判定表的别名表：只存「真实 At 昵称 / 群名片 → uid」，按群隔离。
+        # 不从聊天里猜外号——猜错一次就是喊着别人的名字回话
+        try:
+            addressee.attach(str(DATA_DIR / "aliases.json"))
+        except Exception as e:
+            logger.warning("[fish] 别名表载入失败：%s", e)
         # 群友 @ 关系网：只记近期互动，落盘前剪掉 6 小时前的记录，不会无限涨
         self.relations_path = str(DATA_DIR / "relations.json")
         try:
@@ -382,6 +388,12 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         at_targets = self._at_targets(event)
         reply_to_uid = self._reply_to_uid(event)
         is_quote_bot = self._is_quote_bot(event)
+        # 别名表的原料：At 段带出来的真实昵称 + 群名片。只认这两样，别的一概不学
+        at_named = tuple((str(getattr(c, "qq", "") or ""), getattr(c, "name", "") or "")
+                         for c in event.message_obj.message
+                         if type(c).__name__.lower() == "at")
+        _sender = getattr(event.message_obj, "sender", None)
+        sender_alias = str(getattr(_sender, "card", "") or getattr(_sender, "nickname", "") or "")
         # 语音单独拎出来：有它就能「听见」，纯语音消息也就不再是空消息
         recs = [c for c in event.message_obj.message
                 if type(c).__name__.lower() == "record"] \
@@ -774,6 +786,25 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
                 _gate = _q_why
         _cap_win = float(self.cfg.get("follow_reply_window_sec", 180) or 180)
         _recent_replies = len([t for t in st.reply_times if now - t <= _cap_win])
+        # ---------- 收件人判定表 ----------
+        # 落一行：谁说的、@ 了谁、引用的是谁、什么时候、什么话题，并算「这句说给谁」。
+        # 判定链只看「多该说」，这一步补上「是不是冲我说的」：两个人聊得正热时
+        # 它按话题相邻抢一句，比漏接更伤。任何异常都不许挡住正常回话，所以兜一条 try
+        _rcpt = None
+        _rcpt_score, _rcpt_reason = 100, ""
+        try:
+            _rcpt = addressee.record(
+                gid=str(gid), uid=str(uid), nick=nick, text=text or "", now=now,
+                self_id=str(event.get_self_id()), at_uids=tuple(at_targets),
+                at_named=at_named, reply_uid=str(reply_to_uid or ""),
+                is_at=bool(is_at), is_quote_bot=bool(is_quote_bot),
+                is_follow=bool(is_follow), is_wake=bool(forced),
+                dialogue=st.dialogue, sender_alias=sender_alias, cfg=self.cfg)
+            _rcpt_score, _rcpt_reason = _rcpt.score, _rcpt.reason
+            logger.info("[fish][rcpt] 群 %s %s", gid, _rcpt.line())
+        except Exception as e:
+            logger.warning("[fish] 收件人判定表异常（不影响回话）：%s: %s", type(e).__name__, e)
+
         _sig = _sd.Signals(
             group_id=str(gid), uid=str(uid), nick=nick, text=text or "", now=now,
             is_at=bool(is_at), is_wake=bool(forced),
@@ -796,6 +827,7 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             ambient_gate_blocked=_gate,
             # 指向：@ 到的人和引用目标都如实带过去。引用我自己的话等于在跟我说话，
             # 这时候哪怕同时 @ 了别人，也不该判成「说的是别人」
+            addressee_score=int(_rcpt_score), addressee_reason=str(_rcpt_reason),
             is_quote_bot=bool(is_quote_bot),
             at_targets=tuple(at_targets),
             reply_to_uid=str(reply_to_uid or ""),
@@ -885,6 +917,9 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             # 而判官那边早就读对了，卡在它的判断没往表达层传。
             # 只给释义、不给「怎么接」：表达阶段吃到提纲就会写成汇报腔
             _topic = str((verdict or {}).get("topic") or "").strip()
+            # 话题是 social_read 才有的，拿到就补回收件人表那一行（表只在内存里）
+            if _topic and _rcpt is not None:
+                _rcpt.topic = _topic[:24]
             # 开关留在配置里，万一发现它把闲聊带成解说腔，关一行就回到原样
             if (_topic and self.cfg.get("topic_hint_enabled", True)
                     and _topic not in ("无", "none", "None", "—")):

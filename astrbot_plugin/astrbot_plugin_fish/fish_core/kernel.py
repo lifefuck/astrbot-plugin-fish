@@ -194,6 +194,8 @@ meme_catalog = _load("meme_catalog", "meme_catalog.py")
 group_memes = _load("group_memes", "group_memes.py")
 # 发送前排版归一化（空格/换行/句号/感叹号），确定性清洗，与提示词无关
 typeset = _load("typeset", "typeset.py")
+# 收件人判定表：这条消息到底说给谁（@/引用 > 点名 > 接续 > 相邻 > 无信号）
+addressee = _load("addressee", "addressee.py")
 
 meme_gate = _load("meme_gate", "meme_gate.py")
 
@@ -305,6 +307,15 @@ DEFAULTS = {
     "cold_atmosphere_enabled": True,
     "cold_field_gap_sec": 900,      # 上一条人话过去多久算冷场；15 分钟，跟「午休/上课」一个量级
     "cold_meme_first": True,        # 冷场时模型没给标签也先垫一张没攻击性的图
+    # --- 收件人判定：这条到底是不是说给鱼的 ---
+    # 判定链只管「多该说」，没管「是不是冲我说的」。两个人聊得正热时按话题相邻
+    # 一头扎进去抢答，比漏接更伤。灰区默认不是，宁可漏接不可抢答。
+    "addressee_guard_enabled": True,   # 总开关：群里不对劲随时关掉，退回只看判定链
+    "addressee_hard_threshold": 70,    # ≥ 这个分认定说给鱼
+    "addressee_gray_threshold": 40,    # 灰区下限：追问窗口内 + 判官过线才放，否则默认不是
+    "addressee_thread_window_sec": 180,  # A↔B 线程多少秒没新消息算散场
+    "addressee_topic_gap_sec": 60,     # 鱼说过话之后多少秒内算「同一段话口」
+    "addressee_alias_enabled": True,   # 从 At 昵称/群名片学别名（不猜外号）
     # 发图：模型写 [看图:标签] 时去 pixiv 捞一张全年龄原图。cookie 留空就借
     # media_parser 那份（同一个号，两处各存一份迟早不同步）
     "pixiv_enabled": True,
@@ -754,4 +765,4 @@ def flatten_conf(raw: dict) -> dict:
     return flat
 
 
-__all__ = ["ToolSet", "_guess_lan_ip", "_URL_RE", "_ASK_OPINION_RE", "_REALTIME_RE", "_NO_SEARCH_RE", "_EXPLICIT_SEARCH_RE", "_VAGUE_Q", "_usage_of", "_search_query", "PLUGIN_DIR", "FISH_CORE", "DATA_DIR", "_warm_png_b64", "_WARM_PNG", "_load", "affect", "favor", "poke_context", "anti_template", "interject_planner", "style_learner", "meme_catalog", "group_memes", "typeset", "meme_gate", "prompts", "composer", "quarrel", "insult_actions", "interject_score", "fish_memory", "splitter", "token_report", "token_card", "vision", "hearing", "pixiv", "_media_parser_pixiv_cookie", "meme_gen", "order_watch", "social_read", "peer_bots", "cross_memory", "panel_api", "admin_actions", "yunzai_link", "backup", "games", "fun_features", "connectors", "safety_guard", "cross_interaction", "memory_atoms", "meme_manager", "DEFAULTS", "MEME_PATH", "_noop", "_write_json", "_POKE_BACK_TS", "_pick_poke", "_BUILTIN_COMMANDS", "_SONG_INTENT_RE", "_SONG_STOP_WORDS", "_SEARCH_MARK_RE", "_SEARCH_LEFTOVER_RE", "_PIXIV_MARK_RE", "_PIXIV_LEFTOVER_RE", "_ImgRef", "_TAG_ONLY_RE", "_SONG_META_HEAD", "_SONG_META_CONTAINS", "_parse_song_request", "_MEME_ASK_RE", "_meme_ask_term", "_REPORT_RE", "_extract_report", "_TATTLE_RE", "_is_tattle_request", "_is_builtin_cmd", "_poke_back", "_ASK_FAVOR_RE", "_TECH_TOKEN_RE", "GroupState", "_poke_aimed_at_me", "_UNSET", "_handler_guard", "flatten_conf", "NO_TOOLS"]
+__all__ = ["ToolSet", "_guess_lan_ip", "_URL_RE", "_ASK_OPINION_RE", "_REALTIME_RE", "_NO_SEARCH_RE", "_EXPLICIT_SEARCH_RE", "_VAGUE_Q", "_usage_of", "_search_query", "PLUGIN_DIR", "FISH_CORE", "DATA_DIR", "_warm_png_b64", "_WARM_PNG", "_load", "affect", "favor", "poke_context", "anti_template", "interject_planner", "style_learner", "meme_catalog", "group_memes", "typeset", "addressee", "meme_gate", "prompts", "composer", "quarrel", "insult_actions", "interject_score", "fish_memory", "splitter", "token_report", "token_card", "vision", "hearing", "pixiv", "_media_parser_pixiv_cookie", "meme_gen", "order_watch", "social_read", "peer_bots", "cross_memory", "panel_api", "admin_actions", "yunzai_link", "backup", "games", "fun_features", "connectors", "safety_guard", "cross_interaction", "memory_atoms", "meme_manager", "DEFAULTS", "MEME_PATH", "_noop", "_write_json", "_POKE_BACK_TS", "_pick_poke", "_BUILTIN_COMMANDS", "_SONG_INTENT_RE", "_SONG_STOP_WORDS", "_SEARCH_MARK_RE", "_SEARCH_LEFTOVER_RE", "_PIXIV_MARK_RE", "_PIXIV_LEFTOVER_RE", "_ImgRef", "_TAG_ONLY_RE", "_SONG_META_HEAD", "_SONG_META_CONTAINS", "_parse_song_request", "_MEME_ASK_RE", "_meme_ask_term", "_REPORT_RE", "_extract_report", "_TATTLE_RE", "_is_tattle_request", "_is_builtin_cmd", "_poke_back", "_ASK_FAVOR_RE", "_TECH_TOKEN_RE", "GroupState", "_poke_aimed_at_me", "_UNSET", "_handler_guard", "flatten_conf", "NO_TOOLS"]

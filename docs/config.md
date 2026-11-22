@@ -118,6 +118,12 @@
 | `cold_atmosphere_enabled` | `true` | 冷场补气氛：安静久了先垫表情包、再拿本群老梗递话头 |
 | `cold_field_gap_sec` | `900` | 上一条人话过去多少秒算冷场（默认 15 分钟） |
 | `cold_meme_first` | `true` | 冷场时模型没写表情标签也先垫一张没攻击性的图（卖萌/睡觉/干饭） |
+| `addressee_guard_enabled` | `true` | 收件人判定总开关：判断这句话到底是不是说给鱼的（关掉就退回只看判定链） |
+| `addressee_hard_threshold` | `70` | 多少分以上认定「说给鱼」：被@/引用我=100，点名=70，追问/代词=60，鱼刚说过=30 |
+| `addressee_gray_threshold` | `40` | 灰区下限：分数在灰区以上但没到阈值时，只有追问窗口内且判官过线才放行，否则默认不是 |
+| `addressee_thread_window_sec` | `180` | A↔B 两个人聊得正热的线程，多少秒没新消息算散场（线程里鱼是旁观者，不抢话） |
+| `addressee_topic_gap_sec` | `60` | 鱼说过话之后多少秒内算同一段话口（弱信号，只值 30 分，单凭它不够阈值） |
+| `addressee_alias_enabled` | `true` | 从真实 At 昵称和群名片学别名（只学不猜，不从聊天里编外号） |
 
 ## 高级分组：风控与告状（`advanced_safety`）
 

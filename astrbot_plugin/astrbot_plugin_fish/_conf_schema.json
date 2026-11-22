@@ -623,6 +623,36 @@
         "type": "bool",
         "default": true,
         "description": "冷场时模型没写表情标签也先垫一张没攻击性的图（卖萌/睡觉/干饭）"
+      },
+      "addressee_guard_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "收件人判定总开关：判断这句话到底是不是说给鱼的（关掉就退回只看判定链）"
+      },
+      "addressee_hard_threshold": {
+        "type": "int",
+        "default": 70,
+        "description": "多少分以上认定「说给鱼」：被@/引用我=100，点名=70，追问/代词=60，鱼刚说过=30"
+      },
+      "addressee_gray_threshold": {
+        "type": "int",
+        "default": 40,
+        "description": "灰区下限：分数在灰区以上但没到阈值时，只有追问窗口内且判官过线才放行，否则默认不是"
+      },
+      "addressee_thread_window_sec": {
+        "type": "int",
+        "default": 180,
+        "description": "A↔B 两个人聊得正热的线程，多少秒没新消息算散场（线程里鱼是旁观者，不抢话）"
+      },
+      "addressee_topic_gap_sec": {
+        "type": "int",
+        "default": 60,
+        "description": "鱼说过话之后多少秒内算同一段话口（弱信号，只值 30 分，单凭它不够阈值）"
+      },
+      "addressee_alias_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "从真实 At 昵称和群名片学别名（只学不猜，不从聊天里编外号）"
       }
     }
   },

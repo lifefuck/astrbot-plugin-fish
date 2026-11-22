@@ -75,6 +75,12 @@ class Signals:
     interject_times: tuple = ()          # 近窗内的主动插话时间戳
     recent_replies: int = 0              # 追问窗口内最近已回几条（旧 follow_reply_cap 口径）
 
+    # —— 收件人：这条到底说给谁（addressee.py 打分）——
+    # 默认满分 = 不改变既有行为。只有主路径会传入真实分数，裸 @ / 私聊等
+    # 走 _sd_signals 的入口拿默认值，等于这道闸对它们不生效
+    addressee_score: int = 100
+    addressee_reason: str = ""
+
     # —— 内容形态 ——
     has_image: bool = False
     has_media: bool = False
@@ -186,6 +192,27 @@ def decide(sig: Signals, cfg: Optional[Dict[str, Any]] = None) -> SpeakDecision:
     notes["手打前缀"] = sig.is_wake
     notes["被骂"] = abused_ok
     notes["追问"] = sig.is_follow
+
+    # ---------- 1.4 收件人闸：这句是不是冲我说的 ----------
+    # 优先级只回答「多该说」，不回答「是不是说给我」。两个人聊得正热时按话题相邻
+    # 抢一句，比漏接更伤。被 @ / 引用 / 唤醒在优先级里已是 CALLED 且满分，拦不到它们；
+    # 这道闸主要拦「话题相邻就想插嘴」和「@ 了别人还凑上去」。
+    # 灰区（gray ≤ 分 < hard）默认仍然不是，只有追问窗口内且判官过线才放。
+    if cfg.get("addressee_guard_enabled", True) and prio < PRIO_CALLED and not abused_ok:
+        hard = _cfg_num(cfg, "addressee_hard_threshold", 70, notes)
+        gray = _cfg_num(cfg, "addressee_gray_threshold", 40, notes)
+        sc = int(sig.addressee_score)
+        notes["收件人"] = sc
+        if sc < hard:
+            # 质量分没跑（None）按「没有反对证据」处理：追问路径本来就把最终
+            # 说不说交给主模型自判 [PASS]，这里再卡一刀等于把追问全掐死
+            thr = sig.judge_threshold or _cfg_num(cfg, "judge_threshold", 0.48, notes)
+            quality_ok = sig.judge_score is None or sig.judge_score >= thr
+            if not (sc >= gray and sig.is_follow and quality_ok):
+                return SpeakDecision(
+                    False, "收件人不是鱼（%d %s）" % (sc, sig.addressee_reason or "无信号"),
+                    mode=mode, priority=prio, notes=notes)
+            notes["灰区放行"] = sc
 
     # ---------- 1.5 旁观态准入：由 interject 打分器给的结论，只压主动路径 ----------
     if prio <= PRIO_PROACTIVE and (sig.ambient_gate_blocked or "").strip():

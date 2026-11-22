@@ -63,6 +63,20 @@ case("引用我且@别人也接", True, "引用我", text="你看这个",
      is_quote_bot=True, reply_to_uid="111", uid="222",
      at_targets=("999",), target_uid="", address_evidence="@别人")
 
+# 14.7 收件人闸：旁听了两个人聊天，无指向证据 + 没质量分 -> 不插
+case("旁听两人聊天不插", False, "收件人不是鱼", text="哈哈哈哈", is_link=True,
+     addressee_score=0, addressee_reason="A↔B在聊")
+# 14.8 灰区（40–70）没有追问窗口：默认仍然不是
+case("灰区无追问不接", False, "收件人不是鱼", text="你们聊啥呢", is_link=True,
+     addressee_score=50, judge_score=0.82, addressee_reason="代词")
+# 14.9 灰区 + 追问窗口：放行（追问不装死）
+case("灰区追问放行", True, "追问", is_follow=True, text="那再讲讲",
+     addressee_score=50, addressee_reason="追问窗口")
+# 14.10 低于灰区：追问也不放
+case("低于灰区追问不放", False, "收件人不是鱼", is_follow=True, text="那再讲讲",
+     addressee_score=20, addressee_reason="无信号")
+# 14.11 被 @ 时收件人分再低也不许拦（人点名了必须应声）
+case("被@不因收件人分被拦", True, "被@", is_at=True, text="在吗", addressee_score=0)
 # 15 主动质量分不达标：不接（影子比对抓到的真实 bug：带分就一路放行）
 case("主动质量不达标", False, "主动质量", text="今天好热", judge_score=0.47, judge_threshold=0.48)
 # 16 主动质量分达标：走 inline PASS
