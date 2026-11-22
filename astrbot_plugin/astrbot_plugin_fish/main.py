@@ -59,7 +59,9 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
 
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
-        self.cfg = {**DEFAULTS, **(config or {})}
+        # 面板上 78 个调优项收进了 advanced_* 五个对象节，这里摊平一次，
+        # 上层照旧读扁平键；老配置里的扁平键还在，升级不用迁移
+        self.cfg = {**DEFAULTS, **flatten_conf(config)}
         # 同一个标签 10 分钟内只搜一次：pixiv 有频率限制，被 429 之后整段时间都发不出图
         self._pixiv_cd = pixiv.Cooldown(600)
         DATA_DIR.mkdir(parents=True, exist_ok=True)

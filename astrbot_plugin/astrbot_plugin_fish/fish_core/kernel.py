@@ -312,25 +312,25 @@ DEFAULTS = {
     "command_prefixes": ["#", "*", "%", "~"],
     # --- 长回复拆条 ---
     "split_enabled": True,
-    "split_max_chars": 60,
+    "split_max_chars": 45,          # 线上实测 45 最稳：26 一拆就碎，60 又像一坨
     "split_max_parts": 3,
     "split_gap_min": 0.6,
     "split_gap_max": 1.5,
     # --- Gemini 看图 ---
     "vision_enabled": True,
-    "vision_model": "gemini-4-hydrogen",
+    "vision_model": "gemini-3.5-flash-lite",   # 4-hydrogen 长年 429，别再留
     # 识图主通道改成 WB 池（Gemini 常年限流）；顺序 vision_wb_models → 框架 provider → Gemini 直连
     "vision_wb_enable": True,
     "vision_wb_base": "http://127.0.0.1:3425/v1",
     "vision_wb_key": "",
     "vision_wb_models": ["wb/glm-5v-turbo", "wb/minimax-m3.1-flash"],
-    "vision_fallback_models": ["gemini-3.1-flash-lite", "gemini-flash-lite-latest"],
+    "vision_fallback_models": ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"],
     "vision_max_images": 2,
     "vision_timeout_sec": 12,
     "vision_total_budget_sec": 20,
     "vision_proxy": "http://127.0.0.1:7890",
     "vision_api_key": "",
-    "vision_key_env_file": os.path.expanduser("~/.config/qq-deepseek-bot.env"),
+    "vision_key_env_file": "~/.config/qq-deepseek-bot.env",   # 读的时候 expanduser，别把家目录写死进默认值
     # --- 两步生成 ---
     "social_read_enabled": True,
     "social_read_provider": "",
@@ -727,4 +727,20 @@ def _handler_guard(fn):
     return wrapper
 
 
-__all__ = ["ToolSet", "_guess_lan_ip", "_URL_RE", "_ASK_OPINION_RE", "_REALTIME_RE", "_NO_SEARCH_RE", "_EXPLICIT_SEARCH_RE", "_VAGUE_Q", "_usage_of", "_search_query", "PLUGIN_DIR", "FISH_CORE", "DATA_DIR", "_warm_png_b64", "_WARM_PNG", "_load", "affect", "favor", "poke_context", "anti_template", "interject_planner", "style_learner", "meme_catalog", "meme_gate", "prompts", "composer", "quarrel", "insult_actions", "interject_score", "fish_memory", "splitter", "token_report", "token_card", "vision", "hearing", "pixiv", "_media_parser_pixiv_cookie", "meme_gen", "order_watch", "social_read", "peer_bots", "cross_memory", "panel_api", "admin_actions", "yunzai_link", "backup", "games", "fun_features", "connectors", "safety_guard", "cross_interaction", "memory_atoms", "meme_manager", "DEFAULTS", "MEME_PATH", "_noop", "_write_json", "_POKE_BACK_TS", "_pick_poke", "_BUILTIN_COMMANDS", "_SONG_INTENT_RE", "_SONG_STOP_WORDS", "_SEARCH_MARK_RE", "_SEARCH_LEFTOVER_RE", "_PIXIV_MARK_RE", "_PIXIV_LEFTOVER_RE", "_ImgRef", "_TAG_ONLY_RE", "_SONG_META_HEAD", "_SONG_META_CONTAINS", "_parse_song_request", "_MEME_ASK_RE", "_meme_ask_term", "_REPORT_RE", "_extract_report", "_TATTLE_RE", "_is_tattle_request", "_is_builtin_cmd", "_poke_back", "_ASK_FAVOR_RE", "_TECH_TOKEN_RE", "GroupState", "_poke_aimed_at_me", "_UNSET", "_handler_guard"]
+def flatten_conf(raw: dict) -> dict:
+    """把配置的对象分组摊平成扁平键。
+
+    面板上把 78 个调优项收进了 advanced_* 五个对象节，但上层代码只认扁平键
+    （self.cfg["meme_pool_size"]）。这里在入口摊一次，调用点一个都不用改；
+    老配置里的扁平键优先，升级时不用迁移。
+    """
+    flat: dict = {}
+    for key, val in (raw or {}).items():
+        if isinstance(val, dict):
+            flat.update(val)
+        else:
+            flat[key] = val
+    return flat
+
+
+__all__ = ["ToolSet", "_guess_lan_ip", "_URL_RE", "_ASK_OPINION_RE", "_REALTIME_RE", "_NO_SEARCH_RE", "_EXPLICIT_SEARCH_RE", "_VAGUE_Q", "_usage_of", "_search_query", "PLUGIN_DIR", "FISH_CORE", "DATA_DIR", "_warm_png_b64", "_WARM_PNG", "_load", "affect", "favor", "poke_context", "anti_template", "interject_planner", "style_learner", "meme_catalog", "meme_gate", "prompts", "composer", "quarrel", "insult_actions", "interject_score", "fish_memory", "splitter", "token_report", "token_card", "vision", "hearing", "pixiv", "_media_parser_pixiv_cookie", "meme_gen", "order_watch", "social_read", "peer_bots", "cross_memory", "panel_api", "admin_actions", "yunzai_link", "backup", "games", "fun_features", "connectors", "safety_guard", "cross_interaction", "memory_atoms", "meme_manager", "DEFAULTS", "MEME_PATH", "_noop", "_write_json", "_POKE_BACK_TS", "_pick_poke", "_BUILTIN_COMMANDS", "_SONG_INTENT_RE", "_SONG_STOP_WORDS", "_SEARCH_MARK_RE", "_SEARCH_LEFTOVER_RE", "_PIXIV_MARK_RE", "_PIXIV_LEFTOVER_RE", "_ImgRef", "_TAG_ONLY_RE", "_SONG_META_HEAD", "_SONG_META_CONTAINS", "_parse_song_request", "_MEME_ASK_RE", "_meme_ask_term", "_REPORT_RE", "_extract_report", "_TATTLE_RE", "_is_tattle_request", "_is_builtin_cmd", "_poke_back", "_ASK_FAVOR_RE", "_TECH_TOKEN_RE", "GroupState", "_poke_aimed_at_me", "_UNSET", "_handler_guard", "flatten_conf"]

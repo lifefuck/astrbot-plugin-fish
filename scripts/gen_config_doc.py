@@ -45,16 +45,39 @@ def fmt_default(value) -> str:
     return f"`{text}`"
 
 
+def _row(key: str, meta: dict) -> str:
+    desc = str(meta.get("description") or "").strip()
+    hint = str(meta.get("hint") or "").strip()
+    # hint 是面板里的补充说明，比 description 信息量大；两段都留，用句号连
+    text = desc + ("。" + hint if hint and hint != desc else "")
+    text = text.replace("|", "\\|").replace("\n", " ")
+    return f"| `{key}` | {fmt_default(meta.get('default'))} | {text} |"
+
+
 def render(data: dict) -> str:
-    lines = [HEADER, "| 配置项 | 默认 | 说明 |", "| :--- | :--- | :--- |"]
+    """核心项平铺一张表，对象分组（type=object）各起一节。
+
+    分组是为了面板上不把 118 项一次糊到人脸上，但文档里一项都不能少：
+    调优项出问题时，人最先翻的就是这份表。
+    """
+    lines = [HEADER, "## 核心配置", "", "| 配置项 | 默认 | 说明 |", "| :--- | :--- | :--- |"]
+    groups = []
     for key, meta in data.items():
-        desc = str(meta.get("description") or "").strip()
-        hint = str(meta.get("hint") or "").strip()
-        # hint 是面板里的补充说明，比 description 信息量大；两段都留，用句号连
-        text = desc + ("。" + hint if hint and hint != desc else "")
-        text = text.replace("|", "\\|").replace("\n", " ")
-        lines.append(f"| `{key}` | {fmt_default(meta.get('default'))} | {text} |")
+        if isinstance(meta, dict) and meta.get("type") == "object":
+            groups.append((key, meta))
+            continue
+        lines.append(_row(key, meta))
     lines.append("")
+    for key, meta in groups:
+        title = str(meta.get("description") or key).strip()
+        hint = str(meta.get("hint") or "").strip()
+        lines += [f"## 高级分组：{title}（`{key}`）", ""]
+        if hint:
+            lines += [hint, ""]
+        lines += ["| 配置项 | 默认 | 说明 |", "| :--- | :--- | :--- |"]
+        for sub, smeta in (meta.get("items") or {}).items():
+            lines.append(_row(sub, smeta))
+        lines.append("")
     return "\n".join(lines)
 
 

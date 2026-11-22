@@ -45,7 +45,7 @@ def sha(s: str) -> str:
 # 只有跑到那行才 NameError（GroupState 就这么丢过一次，靠线上 Traceback 才发现）。
 # 把 main 命名空间里必须存在的顶层名钉死，探针跑一遍就能发现
 _MUST_EXIST = ("GroupState", "_ImgRef", "_UNSET", "DEFAULTS", "PLUGIN_DIR", "DATA_DIR",
-               "MEME_PATH", "_TECH_TOKEN_RE", "_BUILTIN_COMMANDS")
+               "MEME_PATH", "_TECH_TOKEN_RE", "_BUILTIN_COMMANDS", "flatten_conf")
 
 
 def check_exports():
