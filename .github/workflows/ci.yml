@@ -25,7 +25,8 @@ jobs:
 
       - name: 插件结构 + 配置格式
         run: |
-          pip install --quiet pyyaml
+          # pillow：视觉回归要真缩图（透明底合成、巨图拒识），不装就测不了
+          pip install --quiet pyyaml pillow
           python scripts/check_plugin.py
 
       - name: 隐私扫描
