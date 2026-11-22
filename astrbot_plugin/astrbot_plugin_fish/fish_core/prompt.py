@@ -50,13 +50,26 @@ class PromptMixin:
         memory_lines = []
         if gid and gid != "private":
             try:
+                _req = bool(self.cfg.get("memory_source_required", True))
                 recalled = await asyncio.to_thread(
                     self.memory.recall, gid, uid, text,
-                    int(self.cfg.get("memory_recall_topk", 2)))
+                    int(self.cfg.get("memory_recall_topk", 2)), 14.0,
+                    "active" if _req else "passive")
+                # 主动召回没命中、而这句又是在问事：放宽到「有话题重合就许引用」。
+                # 只降一档、不放开无来源的条目——问到才提，跟前一条规则不冲突
+                if not recalled and _req and re.search(r"[?？]|吗|么|啥|什么|几|哪|怎么|为什么", text or ""):
+                    recalled = await asyncio.to_thread(
+                        self.memory.recall, gid, uid, text,
+                        int(self.cfg.get("memory_recall_topk", 2)), 14.0, "passive")
+                    if recalled:
+                        logger.info("[fish] 记忆改用被动召回：%d 条", len(recalled))
                 # 过滤碎片、近重去重、带出处，全在 fish_memory.shape_recalled 一处
                 memory_lines = fish_memory.shape_recalled(
                     recalled, nick=nick, text=text,
-                    fmt_when=self._fmt_mem_when, limit=2)
+                    fmt_when=self._fmt_mem_when, limit=2,
+                    mode="active" if _req else "passive")
+                # 留一份给下一轮的纠正检测：他说「你记错了」时要能对上是哪条
+                self._last_recalled[str(gid)] = list(recalled or [])
             except Exception as e:
                 logger.warning("[fish] 记忆召回失败: %s", e)
 
@@ -122,7 +135,13 @@ class PromptMixin:
                 if _used:
                     memory_atoms.mark_used(atoms, _used)
                 if atom_text:
-                    memory_lines.append(atom_text[:260])
+                    # 印象原子是鱼自己总结的（inferred），按第 5 步的规矩只能被动提：
+                    # 这句跟它沾边才出现，否则闭嘴——主动提自己的猜想最容易说错人
+                    if (not self.cfg.get("memory_source_required", True)
+                            or fish_memory.topic_overlap(
+                                {"content": atom_text, "topic": fish_memory.topics_of(atom_text)},
+                                text or "")):
+                        memory_lines.append(atom_text[:260])
                 if atoms != atoms_raw:
                     self._atoms_all[f"{gid}:{uid}"] = atoms
                     self._save_atoms()
@@ -137,6 +156,21 @@ class PromptMixin:
                     memory_lines.append(rel[:120])
         except Exception as e:
             logger.debug("[fish] 关系网摘要失败：%s", e)
+
+        # 目的地记忆：这件事跟这个人说过两回了，第三次先自查再开口。
+        # 不是禁止说，是让它自己决定「补新的 / 推进 / 承认重复」
+        if not is_private and self.cfg.get("memory_source_required", True):
+            try:
+                _tp = fish_memory.topics_of(text or "")
+                _n, _last = self.memory.said_repeats(gid, uid, _tp)
+                _warn = int(self.cfg.get("memory_said_repeat_warn", 2) or 2)
+                if _n >= _warn and _last:
+                    memory_lines.insert(0, 
+                        f"【这事你已经跟他说过 {_n} 次了（上次：「{_last[:30]}」）："
+                        f"别再从头讲，要么补一句新的，要么直接问他办没办】")
+                    logger.info("[fish][mem][repeat] 群 %s 重复第 %d 次：%s", gid, _n, _last[:20])
+            except Exception as e:
+                logger.debug("[fish] 目的地记忆查询失败：%s", e)
 
         # 有人问「X 是什么梗」：本地词库查不到就去梗百科，查到的只当资料、带来源
         ask_term = _meme_ask_term(text or "")
@@ -229,6 +263,7 @@ class PromptMixin:
             atmosphere_hint=atmosphere_hint,
             budget={
                 "memory": int(self.cfg.get("prompt_budget_memory_max", 2) or 0),
+                "memory_chars": int(self.cfg.get("memory_prompt_budget", 160) or 0),
                 "style": int(self.cfg.get("prompt_budget_style_max", 3) or 0),
                 "hint": int(self.cfg.get("prompt_budget_hint_max", 2) or 0),
             },

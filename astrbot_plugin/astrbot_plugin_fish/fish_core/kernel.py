@@ -358,6 +358,12 @@ DEFAULTS = {
     "social_context_sec": 1800,
     "timeline_size": 40,
     "memory_recall_topk": 4,
+    # --- 记忆补全（第 5 步）：出处、可引用性、目的地记忆 ---
+    "memory_source_required": True,   # 关掉=退回没有出处也能主动提的老行为
+    "memory_min_confidence": 0.5,     # 主动引用要求的最低置信度
+    "memory_said_repeat_warn": 2,     # 同一件事跟同一个人说过几次后先自查
+    "memory_conf_decay_days": 30,     # 低置信度记忆多久没人印证就降一档
+    "memory_prompt_budget": 160,      # 记忆块字数上限（条数之外的第二道闸）
     "style_learning": True,
     "debug_dump_prompt": False,
     # 云崽等面板指令前缀：这些消息归别的插件，绝不插嘴

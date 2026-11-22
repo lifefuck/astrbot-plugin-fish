@@ -60,6 +60,15 @@ jobs:
       - name: 骂战分级（无指向的阴阳词不升级）
         run: python scripts/test_quarrel.py
 
+      - name: 记忆出处（来源判定/可引用性/改述）
+        run: python scripts/test_memory_source.py
+
+      - name: 目的地记忆（说过几次/跨人跨群隔离/裁剪）
+        run: python scripts/test_memory_said.py
+
+      - name: 记忆纠错（改库/纠正记录/低置信度降级）
+        run: python scripts/test_memory_correction.py
+
       - name: 在场（什么算在场/配额/间隔）
         run: python scripts/test_presence.py
 

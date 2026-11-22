@@ -746,6 +746,11 @@ class RespondMixin:
                 if acct.get("gid_real") != "private":
                     self.memory.attach_reply(acct["gid_real"], acct["uid"],
                                              acct["text"], final)
+                    # 目的地记忆：这句对谁说的。同一件事第三次开口前要自查，
+                    # 靠的就是这里每天攒的「我说过什么」
+                    self.memory.record_said(
+                        acct["gid_real"], str(acct.get("uid") or ""), final,
+                        to_nick=str(acct.get("nick") or ""))
             except Exception as e:
                 logger.warning("[fish] 记忆写入失败: %s", e)
         except Exception as e:

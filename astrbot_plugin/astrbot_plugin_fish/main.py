@@ -84,9 +84,15 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         # 启动时清一次：流水账留 45 天，软删记忆留 30 天，不然库只涨不落
         try:
             cleaned = self.memory.prune()
-            if any(cleaned.values()):
-                logger.info("[fish] 启动清理：流水 %d 行、软删记忆 %d 条、标签 %d 条",
-                            cleaned["turn_logs"], cleaned["memories"], cleaned["tags"])
+            # 低置信度记忆按「多久没人再印证」慢慢降权：留在库里但不再冒头，
+            # 降到 0.2 以下才软删（留行可人工捞回）
+            _decayed = self.memory.decay_low_confidence(
+                days=float(self.cfg.get("memory_conf_decay_days", 30) or 30))
+            if any(cleaned.values()) or _decayed:
+                logger.info("[fish] 启动清理：流水 %d 行、软删记忆 %d 条、标签 %d 条、"
+                            "目的地 %d 行、降权 %d 条",
+                            cleaned["turn_logs"], cleaned["memories"], cleaned["tags"],
+                            cleaned.get("said", 0), _decayed)
         except Exception as e:
             logger.warning("[fish] 启动清理失败：%s", e)
         # 心境状态落盘在同目录；原项目 attach 时故意不调 save，这里由 tick 触发
@@ -143,6 +149,11 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         # 每群上次下载视频的时间，防止连贴链接时并发下好几份
         self._atoms_all = self._load_atoms()
         self._distill_ts: dict[str, float] = {}   # 印象提炼节流：uid -> 上次调用时间
+        # 本轮消息的出处（原文 id / 说给谁），按群存一份。_remember 有十来个调用点，
+        # 逐个加参数迟早漏一个，统一从这里取
+        self._mem_turn: dict[str, dict] = {}
+        # 上一轮喂给模型的记忆，纠正检测要拿它比对（按群存）
+        self._last_recalled: dict[str, list] = {}
         # 同一张图只识一次：时间线回填和「要不要回这条」会各要一次描述
         self._vision_jobs: dict[str, asyncio.Task] = {}
         # 联网类能力共用一个 session，别每句话新建连接
@@ -813,6 +824,35 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             logger.info("[fish][rcpt] 群 %s %s", gid, _rcpt.line())
         except Exception as e:
             logger.warning("[fish] 收件人判定表异常（不影响回话）：%s: %s", type(e).__name__, e)
+
+        # 出处三元组：原文 id + 这句说给谁。记忆没有出处就不许主动提，
+        # 所以这一步必须在写记忆之前做完
+        _at_first = at_named[0] if at_named else ("", "")
+        self._mem_turn[str(gid)] = {
+            "mid": str(getattr(getattr(event, "message_obj", None), "message_id", "") or ""),
+            "addressee_id": str(event.get_self_id()) if is_at
+            else str(_at_first[0] or ""),
+            "addressee_nick": (str(self.cfg.get("bot_nickname") or "鱼") if is_at
+                               else str(_at_first[1] or "")),
+        }
+
+        # 纠正检测：这句像在纠正上一轮引用过的记忆，就当场改库。
+        # 放到模型之前做——先改库再生成，这一轮的回话才是对的；
+        # 等下一轮再改，群里已经多了一条坚持旧答案的回复
+        if text and gid and self.cfg.get("memory_source_required", True):
+            try:
+                _prev = self._last_recalled.get(str(gid)) or []
+                _hit = self.memory.detect_correction(text, _prev)
+                if _hit:
+                    _fix = self.memory.apply_correction(
+                        str(gid), str(uid), _hit, text, by_uid=str(uid),
+                        anchor_mid=str((self._mem_turn.get(str(gid)) or {}).get("mid") or ""))
+                    logger.info("[fish][mem][fix] 群 %s 纠正记忆 %s → 新条 %s",
+                                gid, str(_hit.get("id"))[:8], str(_fix.get("new"))[:8])
+                    self.log_event("mem_fix", gid, text[:40], who=nick)
+                    self._last_recalled[str(gid)] = []
+            except Exception as e:
+                logger.warning("[fish] 纠正检测异常（不影响回话）：%s: %s", type(e).__name__, e)
 
         _sig = _sd.Signals(
             group_id=str(gid), uid=str(uid), nick=nick, text=text or "", now=now,

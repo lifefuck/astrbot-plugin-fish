@@ -230,9 +230,21 @@ def build_user_prompt(
 
     _b = budget or {}
     _mem_max = int(_b.get("memory", 2) or 0)
+    # 条数之外再卡一道字数：出处、置信度措辞、动作提示都会让每行变长，
+    # 只限条数的话记忆块能膨胀到三四百字，把正文挤成配角
+    _mem_chars = int(_b.get("memory_chars", 0) or 0)
     if _mem_max > 0 and memory_lines:
+        _kept, _used = [], 0
+        for _m in memory_lines:
+            if len(_kept) >= _mem_max:
+                break
+            # 第一条无论如何都留：它是重复自查那类「不说就会犯错」的提示
+            if _mem_chars and _kept and _used + len(_m) > _mem_chars:
+                break
+            _kept.append(_m)
+            _used += len(_m)
         parts.append("\n【你还记得的关于他/她的事】（括号里是谁在什么时候说的，直接用，别问）：")
-        parts.extend("- " + m for m in memory_lines[:_mem_max])
+        parts.extend("- " + m for m in _kept)
 
     if affect_parts:
         parts.append("")

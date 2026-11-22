@@ -142,6 +142,54 @@
       "step": 1
     }
   },
+  "memory_source_required": {
+    "description": "记忆必须带出处才允许主动提",
+    "type": "bool",
+    "default": true,
+    "hint": "关掉会退回老行为：没有原文锚点的旧记忆也会被主动引用。没事别关。"
+  },
+  "memory_min_confidence": {
+    "description": "主动引用记忆的最低置信度",
+    "type": "float",
+    "default": 0.5,
+    "slider": {
+      "min": 0,
+      "max": 0.95,
+      "step": 0.05
+    }
+  },
+  "memory_said_repeat_warn": {
+    "description": "同一件事对同一个人说过几次后先自查",
+    "type": "int",
+    "default": 2,
+    "slider": {
+      "min": 1,
+      "max": 5,
+      "step": 1
+    },
+    "hint": "到了这个次数，第三次开口前会先提醒自己别从头再讲一遍。"
+  },
+  "memory_conf_decay_days": {
+    "description": "低置信度记忆多少天没人印证就降一档",
+    "type": "int",
+    "default": 30,
+    "slider": {
+      "min": 7,
+      "max": 180,
+      "step": 1
+    }
+  },
+  "memory_prompt_budget": {
+    "description": "记忆块字数上限",
+    "type": "int",
+    "default": 160,
+    "slider": {
+      "min": 60,
+      "max": 400,
+      "step": 10
+    },
+    "hint": "条数之外再卡一道字数，否则出处和动作提示会把正文挤成配角。"
+  },
   "prompt_budget_memory_max": {
     "description": "拼进提示词的记忆条数上限",
     "type": "int",

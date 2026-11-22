@@ -23,7 +23,8 @@ _logger = logging.getLogger(__name__)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # HERE 是 services/，只要上跳一级到项目根；以前多跳一级，库落在了 projects/data/
-DEFAULT_DB_PATH = os.path.join(HERE, "..", "data", "fish_memory.db")
+# 环境变量优先：单测和迁移脚本要指到临时库/线上库，不能写死
+DEFAULT_DB_PATH = os.environ.get("FISH_MEMORY_DB") or os.path.join(HERE, "..", "data", "fish_memory.db")
 
 # 这个模块以前没定义 logger，except 里的 logger.debug 一执行就是 NameError，
 # 记账失败时会直接抛到调用方
@@ -79,6 +80,125 @@ TYPE_TAG = {
     "relationship": "关系", "event": "事件", "note": "指定记录", "plain": "流水"
 }
 
+# ---------------- 记忆出处（第 5 步） ----------------
+# 四类来源，语义只有一句区别：这话是本人认下的，还是别人嘴里听来的
+#   said       本人亲口（可断言）
+#   reported   转述/听说（引用时要带「听 X 说」）
+#   heard      提到第三人的事（不是关于他自己，容易张冠李戴）
+#   inferred   鱼自己总结的印象（永远不许主动提）
+#   said_legacy 迁移过来的旧记忆，没有原文锚点，只能当素材
+SOURCE_CONF = {"said": 0.9, "reported": 0.5, "heard": 0.6, "inferred": 0.4,
+               "said_legacy": 0.45}
+
+# prompt 里怎么说来源。宁可啰嗦一句「听他说」，也别让鱼把别人的事安在这人头上
+SOURCE_WORD = {"said": "他自己说的", "reported": "他转述的", "heard": "你听来的",
+               "inferred": "你自己的印象", "said_legacy": "旧记录，没对上原话"}
+
+# 记忆按类型给一个「下一步能干什么」，光给事实模型只会背书，不会接着聊
+ACTION_HINT = {
+    "fact": "可以顺着接一句，别当新信息",
+    "preference": "可以顺着提，别替他说喜欢什么",
+    "plan": "可以问一句办没办，别催",
+    "promise": "可以轻轻提一下，别讨债",
+    "event": "当旧事带过，别说成刚发生的",
+    "relationship": "提的时候别加评论",
+    "note": "他说让你记的，可以复述",
+    "plain": "",
+}
+
+_REPORTED_RE = re.compile(r"听说|据说|听.{1,4}说|转述|别人说|人家说|网上说")
+_HEARD_RE = re.compile(r"(他|她|他们|她们|朋友|同事|同学|室友|对象|老婆|老公)[^。！？]{0,6}(说|讲|觉得|在)")
+_SELF_RE = re.compile(r"我(叫|是|在|有|养|住|今年|最近|打算|准备|喜欢|讨厌|不|没|刚|昨天|今天)")
+
+_STOP_CHARS = set("我你他她它们的了是有不在这那就都也还和个天今气什么上下里到说想会能要")
+
+
+def topics_of(text: str, limit: int = 3) -> str:
+    """抽 3 个话题词，不调模型。
+
+    只用汉字二元组里出现过的实词：话题是给检索和「这件事我是不是说过」用的，
+    抽虚词进去会让任何两句话都算同一个话题。
+    """
+    t = " ".join(str(text or "").split())
+    if not t:
+        return ""
+    words = []
+    for w in re.findall(r"[\u4e00-\u9fff]{2,6}", t):
+        for i in range(len(w) - 1):
+            g = w[i:i + 2]
+            if g[0] in _STOP_CHARS or g[1] in _STOP_CHARS:
+                continue
+            if g not in words:
+                words.append(g)
+            if len(words) >= limit:
+                return ",".join(words)
+    return ",".join(words[:limit])
+
+
+def classify_source(text: str) -> str:
+    """按措辞判来源，纯规则。
+
+    顺序有讲究：先看「听说」，再看「他说」，最后看「我」。
+    「我听说 X」是转述不是自述，反了就把它记成这人自己的事
+    """
+    t = str(text or "")
+    if _REPORTED_RE.search(t):
+        return "reported"
+    if _SELF_RE.search(t):
+        return "said"
+    if _HEARD_RE.search(t):
+        return "heard"
+    return "said"
+
+
+def topic_overlap(item: Dict, query: str) -> bool:
+    """问句里的词跟这条记忆的话题/正文有没有实打实的重合。"""
+    q = str(query or "")
+    if len(q) < 2:
+        return False
+    for w in re.split(r"[,，\s]+", str(item.get("topic") or "")):
+        if len(w) >= 2 and w in q:
+            return True
+    shared = {c for c in str(item.get("content") or "") if CJK.match(c)} & \
+             {c for c in q if CJK.match(c)}
+    return len(shared) >= 2
+
+
+def is_quotable(item: Dict, query: str = "", mode: str = "active") -> bool:
+    """这条记忆能不能出现在 prompt 里 —— 全项目只有这一处规则。
+
+    active（鱼主动提起）：必须本人亲口/转述、置信度够、且有原文锚点。
+    passive（用户这轮问到相关话题）：旧记录和鱼自己的印象放开，但仅在话题重合时。
+    """
+    src = str(item.get("source_type") or "said")
+    try:
+        conf = float(item.get("confidence") if item.get("confidence") is not None else 0.5)
+    except (TypeError, ValueError):
+        conf = 0.5
+    if mode == "active":
+        return (src in ("said", "reported") and conf >= 0.5
+                and bool(str(item.get("anchor_text") or "").strip()))
+    if src in ("said", "reported"):
+        return True
+    if src in ("said_legacy", "inferred"):
+        return topic_overlap(item, query)
+    return False
+
+
+def restate(content: str, limit: int = 60) -> str:
+    """把原话改述成第三人称一句：只做代词翻转，不改事实。
+
+    让模型把「我养了两只猫」整句念出来，它就会复读原话；翻成「你」之后
+    它得自己组织句子，来源和口气也就自然带出来了。
+    """
+    s = " ".join(str(content or "").split())
+    if len(s) > limit:
+        cut = max(s.rfind("，", 0, limit), s.rfind("；", 0, limit), s.rfind("。", 0, limit))
+        s = s[:cut + 1] if cut >= 20 else s[:limit] + "…"
+    s = s.replace("我们", "你们").replace("我的", "你的").replace("我", "你")
+    return s
+
+
 DDL = """
 CREATE TABLE IF NOT EXISTS fish_memory_records (
     memory_id          TEXT PRIMARY KEY,
@@ -92,7 +212,17 @@ CREATE TABLE IF NOT EXISTS fish_memory_records (
     updated_at         REAL NOT NULL DEFAULT 0,
     last_activated_at  REAL NOT NULL DEFAULT 0,
     activation_count   INTEGER NOT NULL DEFAULT 0,
-    is_deleted         INTEGER NOT NULL DEFAULT 0
+    is_deleted         INTEGER NOT NULL DEFAULT 0,
+    -- 以下 8 列是「记忆补全」加的：没有出处的记忆不许主动提，
+    -- 所以出处跟内容一样是必需字段，不能等要用的时候再猜
+    addressee_id       TEXT NOT NULL DEFAULT '',
+    addressee_nick     TEXT NOT NULL DEFAULT '',
+    topic              TEXT NOT NULL DEFAULT '',
+    anchor_mid         TEXT NOT NULL DEFAULT '',
+    anchor_text        TEXT NOT NULL DEFAULT '',
+    source_type        TEXT NOT NULL DEFAULT 'said',
+    confidence         REAL NOT NULL DEFAULT 0.5,
+    corrected_by       TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_fish_mem_group_person ON fish_memory_records (group_id, person_id);
@@ -129,7 +259,51 @@ CREATE TABLE IF NOT EXISTS fish_token_logs (
     ms      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_token_ts ON fish_token_logs (ts);
+
+-- 纠正记录：谁把哪条记忆改成了什么，永不自动删。
+-- 记忆本身允许被改，但「改过」这件事得留底，否则同一件事会被来回翻烧饼
+CREATE TABLE IF NOT EXISTS fish_memory_corrections (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    memory_id   TEXT NOT NULL DEFAULT '',
+    group_id    TEXT NOT NULL DEFAULT '',
+    person_id   TEXT NOT NULL DEFAULT '',
+    old_content TEXT NOT NULL DEFAULT '',
+    new_content TEXT NOT NULL DEFAULT '',
+    by_uid      TEXT NOT NULL DEFAULT '',
+    ts          REAL NOT NULL DEFAULT 0,
+    anchor_mid  TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_corr_memory ON fish_memory_corrections (memory_id);
+
+-- 目的地记忆：鱼对谁说过什么。同一件事第三次要开口时先自查，
+-- 别第二次第三次还是从头讲一遍
+CREATE TABLE IF NOT EXISTS fish_said_records (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id     TEXT NOT NULL DEFAULT '',
+    to_id        TEXT NOT NULL DEFAULT '',
+    to_nick      TEXT NOT NULL DEFAULT '',
+    topic        TEXT NOT NULL DEFAULT '',
+    gist         TEXT NOT NULL DEFAULT '',
+    anchor_mid   TEXT NOT NULL DEFAULT '',
+    anchor_text  TEXT NOT NULL DEFAULT '',
+    ts           REAL NOT NULL DEFAULT 0,
+    repeat_count INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_said_lookup ON fish_said_records (group_id, to_id, topic, ts);
 """
+
+
+# 旧库补列清单：(列名, 定义)。只加不删，存量行走 DEFAULT
+_MIGRATE_COLS = [
+    ("addressee_id", "TEXT NOT NULL DEFAULT ''"),
+    ("addressee_nick", "TEXT NOT NULL DEFAULT ''"),
+    ("topic", "TEXT NOT NULL DEFAULT ''"),
+    ("anchor_mid", "TEXT NOT NULL DEFAULT ''"),
+    ("anchor_text", "TEXT NOT NULL DEFAULT ''"),
+    ("source_type", "TEXT NOT NULL DEFAULT 'said'"),
+    ("confidence", "REAL NOT NULL DEFAULT 0.5"),
+    ("corrected_by", "TEXT NOT NULL DEFAULT ''"),
+]
 
 
 class FishMemoryEngine:
@@ -165,6 +339,13 @@ class FishMemoryEngine:
         try:
             with self._get_conn() as conn:
                 conn.executescript(DDL)
+                # 旧库补列：CREATE TABLE IF NOT EXISTS 不会给已存在的表加列，
+                # 存量库（线上就是）必须逐列 ALTER，重复执行报 duplicate column 属于正常
+                for col, decl in _MIGRATE_COLS:
+                    try:
+                        conn.execute("ALTER TABLE fish_memory_records ADD COLUMN %s %s" % (col, decl))
+                    except sqlite3.OperationalError:
+                        pass
                 conn.commit()
             return
         except sqlite3.DatabaseError as e:
@@ -322,9 +503,20 @@ class FishMemoryEngine:
         memory_type: str = "event",
         importance: Optional[float] = None,
         tags: Optional[List[str]] = None,
-        ts: Optional[float] = None
+        ts: Optional[float] = None,
+        addressee_id: str = "",
+        addressee_nick: str = "",
+        topic: str = "",
+        anchor_mid: str = "",
+        anchor_text: str = "",
+        source_type: str = "",
+        confidence: Optional[float] = None,
     ) -> Dict:
-        """写入单条记忆，精确指纹或语义近重（Jaccard > 0.75）则合并"""
+        """写入单条记忆，精确指纹或语义近重（Jaccard > 0.75）则合并。
+
+        「记忆补全」加的六个参数不是可选项：没有出处的记忆一律不许主动召回，
+        所以默认值按「本人亲口说的」保守给，但锚点留空 → 只会被当成素材。
+        """
         content = (content or "").strip()
         if not content:
             return {"merged": False, "skipped": True}
@@ -332,6 +524,10 @@ class FishMemoryEngine:
         title = (title or content[:20]).strip()
         now_ts = float(ts if ts is not None else time.time())
         imp = importance if importance is not None else TYPE_IMPORTANCE.get(memory_type, 0.5)
+        src = source_type or classify_source(content)
+        conf = confidence if confidence is not None else SOURCE_CONF.get(src, 0.5)
+        topic = (topic or topics_of(content)).strip()
+        anchor_text = (anchor_text or content)[:80]
 
         with self._get_conn() as conn:
             # 1. 精确指纹排重
@@ -346,10 +542,16 @@ class FishMemoryEngine:
             ).fetchone()
 
             if row:
+                # 老行可能是迁移过来的、没有锚点：这次带了锚点就补上，
+                # 才有资格从「只做素材」升成「可以主动提」
                 conn.execute(
                     "UPDATE fish_memory_records SET activation_count=activation_count+1, "
-                    "last_activated_at=?, updated_at=?, is_deleted=0 WHERE memory_id=?",
-                    (now_ts, now_ts, row["memory_id"])
+                    "last_activated_at=?, updated_at=?, is_deleted=0, "
+                    "anchor_mid=CASE WHEN anchor_mid='' THEN ? ELSE anchor_mid END, "
+                    "anchor_text=CASE WHEN anchor_text='' THEN ? ELSE anchor_text END, "
+                    "topic=CASE WHEN topic='' THEN ? ELSE topic END, "
+                    "confidence=MAX(confidence, ?) WHERE memory_id=?",
+                    (now_ts, now_ts, anchor_mid, anchor_text, topic, conf, row["memory_id"])
                 )
                 if row["is_deleted"]:
                     _logger.info("[记忆] 复活软删记录 %s（同一件事又提到一次）", row["memory_id"][:8])
@@ -388,9 +590,11 @@ class FishMemoryEngine:
             try:
                 conn.execute(
                     "INSERT INTO fish_memory_records (memory_id, group_id, person_id, title, content, "
-                    "memory_type, importance, created_at, updated_at, last_activated_at, activation_count, is_deleted) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)",
-                    (fp, group_id, person_id, title, content, memory_type, imp, now_ts, now_ts, now_ts)
+                    "memory_type, importance, created_at, updated_at, last_activated_at, activation_count, is_deleted, "
+                    "addressee_id, addressee_nick, topic, anchor_mid, anchor_text, source_type, confidence) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?)",
+                    (fp, group_id, person_id, title, content, memory_type, imp, now_ts, now_ts, now_ts,
+                     addressee_id, addressee_nick, topic, anchor_mid, anchor_text, src, conf)
                 )
                 for tag in (tags or [TYPE_TAG.get(memory_type, "记忆")]):
                     conn.execute(
@@ -418,7 +622,8 @@ class FishMemoryEngine:
         person_id: str,
         query: str,
         top_k: int = 2,
-        half_life_days: float = 14.0
+        half_life_days: float = 14.0,
+        mode: str = "active",
     ) -> List[Dict]:
         """根据当前发言检索该群友最相关的历史记忆条目。
         融合分数 = BM25字面分 * 重要度 * 时间半衰期衰减
@@ -445,7 +650,8 @@ class FishMemoryEngine:
         with self._get_conn() as conn:
             rows = conn.execute(
                 "SELECT memory_id, title, content, memory_type, importance, created_at, "
-                "last_activated_at, activation_count FROM fish_memory_records "
+                "last_activated_at, activation_count, addressee_nick, topic, anchor_mid, "
+                "anchor_text, source_type, confidence FROM fish_memory_records "
                 "WHERE group_id=? AND person_id=? AND is_deleted=0",
                 (group_id, person_id)
             ).fetchall()
@@ -505,6 +711,10 @@ class FishMemoryEngine:
             if score <= 0.05:
                 # 0 分条目别占 top_k 名额
                 continue
+            # 出处闸：没锚点的存量、鱼自己的印象，主动聊时一律不出现。
+            # 过滤放在打分之后、入列之前，保证「能不能提」只由这一个函数决定
+            if not is_quotable(d, query, mode):
+                continue
             results.append({
                 "id": d["memory_id"],
                 "content": d["content"],
@@ -512,13 +722,20 @@ class FishMemoryEngine:
                 "score": score,
                 # 谁在什么时候说的：拼进 prompt 时要用，不然模型会把旧事当现状
                 "created_at": d.get("created_at"),
+                "source_type": d.get("source_type") or "said",
+                "confidence": d.get("confidence"),
+                "topic": d.get("topic") or "",
+                "anchor_mid": d.get("anchor_mid") or "",
+                "anchor_text": d.get("anchor_text") or "",
+                "addressee_nick": d.get("addressee_nick") or "",
             })
 
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]
 
     def record_turn(self, group_id: str, person_id: str, user_text: str, reply_text: str = "",
-                    log: bool = True):
+                    log: bool = True, anchor_mid: str = "", addressee_id: str = "",
+                    addressee_nick: str = ""):
         """记录回合流水账，并自动探测是否包含值得捕获的 7 类记忆。
 
         log=False 只做记忆抽取、不写流水：收到消息时先抽一次，等回复出来再用
@@ -552,7 +769,11 @@ class FishMemoryEngine:
                     content=clean_user,
                     memory_type=m_type,
                     importance=TYPE_IMPORTANCE.get(m_type, 0.7),
-                    ts=now_ts
+                    ts=now_ts,
+                    anchor_mid=anchor_mid,
+                    anchor_text=clean_user[:80],
+                    addressee_id=addressee_id,
+                    addressee_nick=addressee_nick,
                 )
 
 
@@ -666,6 +887,147 @@ class FishMemoryEngine:
         }
         return out
 
+    # ---------------- 目的地记忆：鱼对谁说过什么 ----------------
+    def record_said(self, group_id: str, to_id: str, text: str, to_nick: str = "",
+                    anchor_mid: str = "", ts: Optional[float] = None,
+                    window_days: float = 7.0) -> Dict:
+        """记下鱼刚才对谁说了什么。
+
+        同一件事 7 天内不新增行、只把 repeat_count 加一：三次是阈值，
+        一行一条会把「说过三次」摊成三行，查的时候还得再去数
+        """
+        body = " ".join(str(text or "").split())
+        if not body or body.startswith("[只发图"):
+            return {"skipped": True}
+        gist = re.split(r"[。！？!?\n]", body)[0][:40]
+        topic = topics_of(body)
+        now_ts = float(ts if ts is not None else time.time())
+        since = now_ts - window_days * 86400
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT id, repeat_count FROM fish_said_records "
+                "WHERE group_id=? AND to_id=? AND topic=? AND ts>=? "
+                "ORDER BY ts DESC LIMIT 1",
+                (group_id, str(to_id), topic, since)
+            ).fetchone()
+            if row and topic:
+                conn.execute(
+                    "UPDATE fish_said_records SET repeat_count=repeat_count+1, ts=?, "
+                    "gist=?, anchor_mid=?, anchor_text=?, to_nick=? WHERE id=?",
+                    (now_ts, gist, anchor_mid, body[:120], to_nick, row["id"])
+                )
+                conn.commit()
+                return {"id": row["id"], "repeat": int(row["repeat_count"]) + 1}
+            cur = conn.execute(
+                "INSERT INTO fish_said_records (group_id, to_id, to_nick, topic, gist, "
+                "anchor_mid, anchor_text, ts, repeat_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
+                (group_id, str(to_id), to_nick, topic, gist, anchor_mid, body[:120], now_ts)
+            )
+            conn.commit()
+            return {"id": cur.lastrowid, "repeat": 1}
+
+    def said_repeats(self, group_id: str, to_id: str, topic: str,
+                     within_days: float = 7.0) -> Tuple[int, str]:
+        """查「这件事跟这个人说过几次」，返回 (次数, 上次原话摘要)。"""
+        if not str(to_id):
+            return 0, ""
+        since = time.time() - within_days * 86400
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT topic, gist, repeat_count FROM fish_said_records "
+                "WHERE group_id=? AND to_id=? AND ts>=? ORDER BY ts DESC LIMIT 40",
+                (group_id, str(to_id), since)
+            ).fetchall()
+        best, gist = 0, ""
+        for r in rows:
+            if not topic:
+                continue
+            rt = str(r["topic"] or "")
+            if not rt:
+                continue
+            hit = any(w and w in rt for w in topic.split(",")) or \
+                any(w and w in topic for w in rt.split(","))
+            if hit:
+                n = int(r["repeat_count"] or 1)
+                if n > best:
+                    best, gist = n, str(r["gist"] or "")
+        return best, gist
+
+    # ---------------- 纠正与降级 ----------------
+    _CORRECT_RE = re.compile(r"不是(这样|这个|那只|那个)?|我说的是|你记错|记错了|我没说过|"
+                             r"我说过(吗|么)|别瞎记|不对[，,]?我")
+
+    def detect_correction(self, text: str, recalled: List[Dict],
+                          threshold: float = 0.55) -> Optional[Dict]:
+        """用户这句是不是在纠正刚才被召回的那条记忆。
+
+        只认「有纠正话术 + 与某条召回内容重合」的交叉证据：
+        单凭一句「不是」就改记忆，等于谁都能删库
+        """
+        t = str(text or "")
+        if not t or not recalled or not self._CORRECT_RE.search(t):
+            return None
+        best, best_sim = None, 0.0
+        for item in recalled:
+            sim = self.jaccard(t, str(item.get("content") or ""))
+            if sim > best_sim:
+                best, best_sim = item, sim
+        if best is not None and best_sim >= threshold:
+            return best
+        # 句子短、改的数字（两只→三只）时 Jaccard 会被拉低，退一步看共享实词
+        for item in recalled:
+            shared = {c for c in str(item.get("content") or "") if CJK.match(c)} & \
+                     {c for c in t if CJK.match(c)}
+            # 2 个字就够：「两只→三只」这种改口，共享的往往只有量词和旧数字
+            if len(shared) >= 2:
+                return item
+        return None
+
+    def apply_correction(self, group_id: str, person_id: str, old: Dict,
+                         new_text: str, by_uid: str = "", anchor_mid: str = "") -> Dict:
+        """旧条作废 + 写纠正记录 + 按新原话重建一条。"""
+        now_ts = time.time()
+        old_id = str(old.get("id") or "")
+        new_text = " ".join(str(new_text or "").split())
+        with self._get_conn() as conn:
+            if old_id:
+                conn.execute(
+                    "UPDATE fish_memory_records SET confidence=0.0, is_deleted=1, "
+                    "updated_at=?, corrected_by=? WHERE memory_id=?",
+                    (now_ts, "correction", old_id)
+                )
+            conn.execute(
+                "INSERT INTO fish_memory_corrections (memory_id, group_id, person_id, "
+                "old_content, new_content, by_uid, ts, anchor_mid) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (old_id, group_id, str(person_id), str(old.get("content") or "")[:140],
+                 new_text[:140], str(by_uid), now_ts, anchor_mid)
+            )
+            conn.commit()
+        rec = self.add_memory(group_id=group_id, person_id=person_id, content=new_text,
+                              memory_type="fact", importance=0.85, ts=now_ts,
+                              anchor_mid=anchor_mid, anchor_text=new_text[:80],
+                              source_type="said", confidence=0.9)
+        return {"old": old_id, "new": rec.get("id", ""), "ts": now_ts}
+
+    def decay_low_confidence(self, days: float = 30.0, factor: float = 0.85) -> int:
+        """低置信度且长期没人印证的记忆，慢慢降权；降到 0.2 转软删。
+
+        不直接删：这条可能是真的，只是没人再提过；留行才能被人工捞回来
+        """
+        now_ts = time.time()
+        cut = now_ts - days * 86400
+        with self._get_conn() as conn:
+            n = conn.execute(
+                "UPDATE fish_memory_records SET confidence=MAX(0.0, confidence*?), updated_at=? "
+                "WHERE is_deleted=0 AND confidence<0.5 AND last_activated_at<?",
+                (factor, now_ts, cut)
+            ).rowcount
+            conn.execute(
+                "UPDATE fish_memory_records SET is_deleted=1 WHERE is_deleted=0 AND confidence<0.2"
+            )
+            conn.commit()
+        return n
+
     def prune(self, log_days: float = 45.0, grave_days: float = 30.0) -> dict:
         """定期清理：流水账留 45 天，软删的记忆留 30 天。
 
@@ -681,15 +1043,20 @@ class FishMemoryEngine:
                               (now_ts - grave_days * 86400,)).rowcount
             n3 = conn.execute("DELETE FROM fish_memory_records WHERE is_deleted=1 AND updated_at < ?",
                               (now_ts - grave_days * 86400,)).rowcount
+            # 目的地记忆只留两个月：它是「刚才是不是重复了」用的，不是档案
+            n4 = conn.execute("DELETE FROM fish_said_records WHERE ts < ?",
+                              (now_ts - 60 * 86400,)).rowcount
             conn.commit()
-        return {"turn_logs": n1, "tags": n2, "memories": n3}
+        # 纠正记录（fish_memory_corrections）有意不清理：它是记忆被改过的唯一底稿
+        return {"turn_logs": n1, "tags": n2, "memories": n3, "said": n4}
 
 
 # 单例实例
 fish_memory_engine = FishMemoryEngine()
 
 
-def shape_recalled(recalled, *, nick: str, text: str, fmt_when, limit: int = 2) -> list[str]:
+def shape_recalled(recalled, *, nick: str, text: str, fmt_when, limit: int = 2,
+                   mode: str = "active") -> list[str]:
     """把召回结果整成 prompt 里的记忆行。
 
     记忆去重只在这一处：召回、拼装两边各写一份，规则迟早分叉
@@ -717,12 +1084,29 @@ def shape_recalled(recalled, *, nick: str, text: str, fmt_when, limit: int = 2) 
                 if m in content and len(m) < len(content):
                     lines[i] = content
             continue
-        # 只给一句话，模型分不清是「他刚说的」还是「上个月别人说的」，
-        # 会拿旧事当现状答；带上说话人和时间它才知道该不该引用
+        # 出处第二次把关：召回层已经滤过一遍，这里再滤一次是因为
+        # 召回结果会被别的调用方拼装（面板、检索命令），单一规则必须都过一遍
+        if not is_quotable(item, text, mode):
+            continue
         _who = nick or "他"
         _when = fmt_when(item.get("created_at") or item.get("ts"))
-        lines.append(f"{_who}（{_when}）说过：{content}" if _when
-                     else f"{_who}说过：{content}")
+        src = str(item.get("source_type") or "said")
+        try:
+            conf = float(item.get("confidence") if item.get("confidence") is not None else 0.5)
+        except (TypeError, ValueError):
+            conf = 0.5
+        said = restate(content)
+        # 置信度决定敢不敢断言：0.8 以上直接说，0.5~0.8 加「好像」，
+        # 0.5 以下必须先声明自己不确定——比说错再道歉便宜得多
+        if conf >= 0.8:
+            head = f"{_who}{_when}说的（{SOURCE_WORD.get(src, '他说的')}）：" if _when \
+                else f"{_who}说的（{SOURCE_WORD.get(src, '他说的')}）："
+        elif conf >= 0.5:
+            head = f"{_who}好像{_when}说过（{SOURCE_WORD.get(src, '他说的')}）："
+        else:
+            head = f"我记得好像{_who}{_when}提过（{SOURCE_WORD.get(src, '他说的')}，不确定）："
+        hint = ACTION_HINT.get(str(item.get("type") or ""), "")
+        lines.append(head + said + (f" —— {hint}" if hint else ""))
         if len(lines) >= limit:    # 给太多反而更乱，两条够了
             break
     return lines

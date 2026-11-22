@@ -134,8 +134,14 @@ class MemoryMixin:
         if not text:
             return
         try:
+            _prov = getattr(self, "_mem_turn", {}).get(str(gid)) or {}
             # log=False：抽取记忆但先不写流水，等回复出来再补，避免一条消息两行流水
-            await asyncio.to_thread(self.memory.record_turn, gid, uid, text, "", False)
+            await asyncio.to_thread(
+                self.memory.record_turn, gid, uid, text, "", False,
+                anchor_mid=str(_prov.get("mid") or ""),
+                addressee_id=str(_prov.get("addressee_id") or ""),
+                addressee_nick=str(_prov.get("addressee_nick") or ""),
+            )
             # 命中的是偏好/事实，才值得单独压成一条印象原子；
             # 事件和计划塞进原子层只会把「同一个人」的档案搅浑
             kinds = set(fish_memory.FishMemoryEngine.detect_types(text))
