@@ -974,9 +974,14 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         # 不想接就吐 [PASS]（出口已有 PASS 闸）。被 @ / 追问窗口里不许 PASS，照旧必回
         # 救场时同样不准 PASS：这时候群里正等人答，模型自己掂量「值不值得接」
         # 十有八九掂量成不说，救场就白救了
+        # 被 @ 的时候判官纯属白花三秒：反正必须回，「该不该接」问了也是白问，
+        # 它唯一能给的「这句在说什么」对点名场景价值很低。省下的三秒直接进生成。
+        _at_skip = is_at and bool(self.cfg.get("judge_skip_on_at", True))
         _inline_judge = (bool(self.cfg.get("judge_inline", True))
-                         and not (is_at or forced or is_follow or _rescued))
-        if _inline_judge:
+                         and not (forced or is_follow or _rescued or _at_skip))
+        if _at_skip:
+            social_hint = "【这条点名叫你】直接回答，不要输出 [PASS]。"
+        elif _inline_judge:
             social_hint = ("【这条没人叫你】先掂量一下值不值得接：插进去只是废话、或者接不住，"
                            "就只输出 [PASS]，一个字都别多说；要接就一句话接住话头。")
         verdict, vision_desc, voice_text = await asyncio.gather(

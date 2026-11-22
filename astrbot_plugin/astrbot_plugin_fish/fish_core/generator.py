@@ -64,10 +64,14 @@ def _num(cfg: Optional[Dict[str, Any]], key: str, default: float) -> float:
 
 
 def typing_delay(text: str, cfg: Optional[Dict[str, Any]] = None) -> float:
-    """按字数算打字时间：0.6s 起手 + 每秒 6.5 字 + 标点各 0.05s。
+    """按字数算打字时间：0.6s 起手 + 每秒 12 字 + 标点各 0.03s。
 
     真实的人敲键盘看的只有字数，不看模型耗时；短回复反而要留一点停顿，
-    否则一排「嗯」「好耶」秒回看着很假。上限 typing_max_sec（默认 6s）。
+    否则一排「嗯」「好耶」秒回看着很假。上限 typing_max_sec（默认 3s）。
+
+    原来是每秒 6.5 字、上限 6s：模型本身已经要四五秒，再加三四秒打字延迟，
+    一句二十字的回复让人等快十秒，体感就是「这 bot 好慢」。拟人靠的是停顿
+    的位置和长短差，不是把总时长拉长，所以速度翻倍、上限砍半。
     """
     if not (cfg or {}).get("typing_delay_enabled", True):
         return 0.0
@@ -75,9 +79,9 @@ def typing_delay(text: str, cfg: Optional[Dict[str, Any]] = None) -> float:
     if not body:
         return 0.0
     punct = len(_PUNCT_RE.findall(text or ""))
-    sec = 0.6 + len(body) / 6.5 + punct * 0.05
-    top = _num(cfg, "typing_max_sec", 6.0)
-    return round(min(max(sec, 1.0), top), 2)
+    sec = 0.6 + len(body) / 12.0 + punct * 0.03
+    top = _num(cfg, "typing_max_sec", 3.0)
+    return round(min(max(sec, 0.8), top), 2)
 
 
 def make_draft(*, text: str, now: float, ver: int, intent_id: int, mode: str = "",

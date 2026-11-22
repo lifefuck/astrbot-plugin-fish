@@ -565,6 +565,12 @@
         "hint": "开：不再单独发一次判官小请求，改由主模型判断「该不该接」，不想接就内部吐 [PASS]。省 3~5 秒，且少一个永远命不中缓存的请求。被 @ 和追问窗口不受影响，必回。",
         "default": true
       },
+      "judge_skip_on_at": {
+        "type": "bool",
+        "description": "被 @ 时跳过判官",
+        "hint": "开：点名叫你时不再先花一次判官调用（实测中位 3.1 秒）问「该不该接」——反正必须回。代价是失去「这句在说 X」那行释义。",
+        "default": true
+      },
       "multi_turn_contexts": {
         "type": "bool",
         "description": "多轮上下文（缓存友好）",
@@ -741,8 +747,8 @@
       "typing_max_sec": {
         "description": "打字延迟上限（秒）",
         "type": "float",
-        "default": 6.0,
-        "hint": "长段回复也不要让人等太久。"
+        "default": 3.0,
+        "hint": "长段回复也不要让人等太久。模型自己就要四五秒，这里再拖三四秒，一句二十字要等快十秒。"
       },
       "draft_ttl_sec": {
         "description": "草稿存活（秒）",

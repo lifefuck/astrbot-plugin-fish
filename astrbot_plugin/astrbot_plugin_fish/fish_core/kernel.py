@@ -287,6 +287,7 @@ DEFAULTS = {
     "order_guard_enabled": True,   # 主动巡检群秩序：骂人/广告/套提示词就上报主人
     "chat_min_gap_sec": 2,         # 对话延续时的最小间隔（防连珠炮，不是硬冷却）
     "judge_inline": True,
+    "judge_skip_on_at": True,
     "multi_turn_contexts": True,
     "context_turns_max": 48,
     "quarrel_enabled": True,       # 被点名骂 / 骂到主人头上时还嘴（判定在 fish_core/quarrel.py）
@@ -331,7 +332,7 @@ DEFAULTS = {
     "proactive_gap_sec": 90,           # 主动发言之后至少隔多久才允许下一次
     # —— 打字延迟 ——
     "typing_delay_enabled": True,
-    "typing_max_sec": 6.0,             # 延迟封顶，长段也不要让人等太久
+    "typing_max_sec": 3.0,             # 延迟封顶，长段也不要让人等太久
     "draft_ttl_sec": 25,               # 草稿最长存活时间，超了就不发
     # —— 调侃许可（第 4 步）——
     # 三级：无许可只中性、低许可能自嘲、高许可能挤对行为。外貌/性别/家庭/工作能力

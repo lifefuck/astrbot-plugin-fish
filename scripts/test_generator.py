@@ -24,7 +24,7 @@ def _load(name, path):
 GEN = _load("generator", CORE / "generator.py")
 
 NOW = 1_800_000_000.0
-CFG = {"typing_delay_enabled": True, "typing_max_sec": 6.0, "draft_ttl_sec": 25}
+CFG = {"typing_delay_enabled": True, "typing_max_sec": 3.0, "draft_ttl_sec": 25}
 CASES = []
 
 
@@ -37,13 +37,13 @@ def dlg(*rows):
 
 
 def main():
-    # 1 延迟按字数走：短句落在 1.0~1.6 秒
+    # 1 延迟按字数走：短句落在 0.8~1.2 秒（每秒 12 字，起手 0.6s）
     d = GEN.typing_delay("嗯", CFG)
-    case("1 短句 1~1.6 秒", 1.0 <= d <= 1.6, str(d))
+    case("1 短句 0.8~1.2 秒", 0.8 <= d <= 1.2, str(d))
 
     # 2 长句封顶
     d = GEN.typing_delay("这句话特别特别长" * 20, CFG)
-    case("2 长句封顶 6 秒", d == 6.0, str(d))
+    case("2 长句封顶 3 秒", d == 3.0, str(d))
 
     # 3 关掉就没有延迟
     case("3 关掉延迟为 0", GEN.typing_delay("随便说点啥", {"typing_delay_enabled": False}) == 0.0)
