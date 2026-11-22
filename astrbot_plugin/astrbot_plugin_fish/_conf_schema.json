@@ -603,6 +603,26 @@
           "再戳收费"
         ],
         "hint": "只在模型超时/失败时用，平时一律走模型。5 句以内够了：池子再大也治不了复读，能让模型自己写才行。"
+      },
+      "group_memes_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "本群自己的梗：接话时优先用群里真实出现过的说法（由 scripts/mine_group_memes.py 从聊天记录统计）"
+      },
+      "cold_atmosphere_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "冷场补气氛：安静久了先垫表情包、再拿本群老梗递话头"
+      },
+      "cold_field_gap_sec": {
+        "type": "int",
+        "default": 900,
+        "description": "上一条人话过去多少秒算冷场（默认 15 分钟）"
+      },
+      "cold_meme_first": {
+        "type": "bool",
+        "default": true,
+        "description": "冷场时模型没写表情标签也先垫一张没攻击性的图（卖萌/睡觉/干饭）"
       }
     }
   },

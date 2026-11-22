@@ -103,6 +103,11 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         style_learner._POOL_PATH = str(DATA_DIR / "style_fewshot.json")
         # meme_catalog 用 _SCRIPT_DIR 拼相对路径，改指 fish_core，图库走 meme-pack 软链
         meme_catalog._SCRIPT_DIR = str(FISH_CORE)
+        # 日志再落一份文件：journald 只留得住几分钟，出问题回头查就没证据了
+        try:
+            self._attach_file_log(DATA_DIR / "astrbot.log")
+        except Exception:
+            logger.warning("[fish] 文件日志挂载失败，只能看 journal", exc_info=True)
         meme_catalog.CATALOG_FILE = str(MEME_PATH)
 
         # 热梗池：数据目录这时才确定，所以只 attach，落盘载入显式调一次

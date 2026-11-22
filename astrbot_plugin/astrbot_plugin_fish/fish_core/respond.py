@@ -32,6 +32,21 @@ from astrbot.core.message.components import At, AtAll, Image, Plain, Poke, Reply
 from .kernel import *  # noqa: F401,F403
 
 
+def _pick_meme(tag: str, text: str = ""):
+    """按标签挑图：标签是场合（冷场/调侃/接梗/自嘲）就走场景桶，否则按情绪挑。
+
+    两个池子的区别不能混：pick_b64 吃「嘲讽/得意」这种情绪，冷场时甩嘲讽图
+    等于往冷场里再浇一盆冷水，所以场合优先。
+    """
+    try:
+        if tag in getattr(meme_catalog, "SCENES", {}):
+            return meme_catalog.pick_scene_b64(tag, text)
+        return meme_catalog.pick_b64(tag, text)
+    except Exception as e:
+        logger.debug("[fish] 按标签挑图失败 %s：%s", tag, e)
+        return None
+
+
 class RespondMixin:
     @filter.on_decorating_result()
     async def on_decorate(self, event: AstrMessageEvent):
@@ -139,6 +154,16 @@ class RespondMixin:
         st = self._state(gid)
         # 本次占位的 token：只有它自己能回滚冷却位（poke 这类没 claim 的传 None，不会误伤别人）
         _tok = meta.get("claim_tok")
+        # 冷场：上一条人话离现在多久（阈值和 prompt.py 的垫场话术同一套）
+        _cold = False
+        if not str(gid).startswith("private") and self.cfg.get("cold_atmosphere_enabled", True):
+            try:
+                _dlg = list(st.dialogue)
+                _prev = _dlg[-2] if len(_dlg) >= 2 else None
+                _gap = (time.time() - float((_prev or {}).get("ts") or 0)) if _prev else 0.0
+                _cold = _gap >= float(self.cfg.get("cold_field_gap_sec", 900) or 900)
+            except Exception:
+                _cold = False
 
         result = event.get_result()
         if not result or not result.chain:
@@ -228,7 +253,7 @@ class RespondMixin:
         if tag and not clean.strip() and self.cfg.get("meme_enabled", True):
             now0 = time.time()
             ok_meme, why_not = self._meme_gate(gid, st, tag, now0)
-            b64 = meme_catalog.pick_b64(tag, text) if ok_meme else None
+            b64 = _pick_meme(tag, text) if ok_meme else None
             if b64:
                 st.last_meme_ts = now0
                 st.recent_meme_tags.append(tag)
@@ -505,12 +530,17 @@ class RespondMixin:
             logger.info("[fish] 画图「%s」%s", draw_req[:30],
                         "画好了" if drawn_b64 else "没画出来（模板没匹配或资源缺）")
         meme_b64 = None
+        # 冷场垫场：模型没给标签也先配一张没攻击性的图（冷场桶：卖萌/睡觉/干饭），
+        # 「先发表情包，不硬接话」落到实处——气氛冷的时候甩嘲讽图等于再浇盆冷水
+        if not tag and _cold and self.cfg.get("cold_meme_first", True):
+            tag = "冷场"
+            logger.info("[fish] 群 %s 冷场，自动垫一张表情包", gid)
         if tag and self.cfg.get("meme_enabled", True):
             ok_meme, why_not = self._meme_gate(gid, st, tag, now)
             if not ok_meme:
                 logger.info("[fish] 表情包闸拦住（%s），这轮纯文字", why_not)
             else:
-                meme_b64 = meme_catalog.pick_b64(tag, clean or text)
+                meme_b64 = _pick_meme(tag, clean or text)
                 if meme_b64:
                     st.last_meme_ts = now
                     st.recent_meme_tags.append(tag)

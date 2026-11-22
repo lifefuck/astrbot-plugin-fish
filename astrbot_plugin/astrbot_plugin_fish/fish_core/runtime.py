@@ -33,6 +33,30 @@ from .kernel import *  # noqa: F401,F403
 
 
 class RuntimeMixin:
+    def _attach_file_log(self, path, max_bytes: int = 8 * 1024 * 1024, backups: int = 3):
+        """把日志再落一份到文件。
+
+        为什么要这个：本机 journald 被 /etc/systemd/journald.conf.d 限在 50M，
+        astrbot 一天几十万行，journal 只留得住几分钟 —— 出问题回头查时日志已经滚没了。
+        文件按 8M×4 滚，够查一天。挂 root logger，astrbot 自己那部分也一起留住。
+        """
+        import logging
+        from logging.handlers import RotatingFileHandler
+
+        handler = RotatingFileHandler(str(path), maxBytes=max_bytes, backupCount=backups, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        handler.setLevel(logging.INFO)
+        logging.getLogger().addHandler(handler)
+        # 只挂 root 不够：astrbot 自己那批 logger 是 propagate=False 的独立树，
+        # 实测只捞到了 fish.meme_manager / DeepSeekBot 两条，[fish] 的决定、
+        # 收到消息全没进文件。这里把相关 logger 的 propagate 打开，让它们汇到 root
+        for name, lg in list(logging.Logger.manager.loggerDict.items()):
+            if isinstance(lg, logging.Logger) and name.startswith(
+                ("astrbot_plugin_fish", "fish", "astrbot", "Core", "Plug")
+            ):
+                lg.propagate = True
+        return handler
+
     def _backup_interval(self) -> float:
         return float(self.cfg.get("backup_interval_hours", 24) or 24) * 3600
 
@@ -337,3 +361,20 @@ class RuntimeMixin:
             logger.debug("[fish] 读取 AstrBot 唤醒前缀失败：%s", e)
         # dict.fromkeys 去重又保序
         return tuple(dict.fromkeys(items))
+
+def attach_file_log(path, max_bytes: int = 8 * 1024 * 1024, backups: int = 3):
+    """把日志再落一份到文件。
+
+    为什么要这个：本机 journald 被 /etc/systemd/journald.conf.d 限在 50M，
+    astrbot 一天几十万行，journal 只留得住几分钟 —— 出问题回头查时日志已经滚没了
+    （这次排查「群里刚刚回了吗」就卡在这）。文件日志按 8M×4 滚，够查一天。
+    挂 root logger，astrbot 自己那部分输出也一起留住。
+    """
+    import logging
+    from logging.handlers import RotatingFileHandler
+
+    handler = RotatingFileHandler(str(path), maxBytes=max_bytes, backupCount=backups, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    handler.setLevel(logging.INFO)
+    logging.getLogger().addHandler(handler)
+    return handler

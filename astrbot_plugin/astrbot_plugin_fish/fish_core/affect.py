@@ -51,6 +51,8 @@ _path = ""
 _writer = None
 _last_save = 0.0
 _dirty = False
+# 和 favor.py 一样：load() 之前 save() 也可能被调到，缺这行就是一个 NameError
+_readonly = False
 
 _APOLOGY_RE = re.compile(r"(对不起|抱歉|不好意思|我错|别生气|原谅|消消气)")
 _DISTRESS_RE = re.compile(r"(难受|好累|累死|烦死|崩溃|想哭|哭了|失眠|生病|发烧|感冒|头疼|胃疼|压力好大|emo)")

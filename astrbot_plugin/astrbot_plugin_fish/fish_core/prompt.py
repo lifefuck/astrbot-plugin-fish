@@ -149,6 +149,29 @@ class PromptMixin:
         except Exception as e:
             logger.debug("[fish] 热梗取词失败：%s", e)
 
+        # 本群自己的梗：这句用到了群里的说法就点一下（比通用热梗接得准）
+        atmosphere_hint = ""
+        if not is_private and self.cfg.get("group_memes_enabled", True):
+            try:
+                _hit = group_memes.match_hint(gid, text)
+                if _hit:
+                    atmosphere_hint = _hit
+            except Exception as e:
+                logger.debug("[fish] 本群梗命中失败：%s", e)
+        # 冷场：上一条人话离现在多久。太久没人吭声就别硬接上一轮的话头，
+        # 先甩张表情包垫场，再拿本群的老梗递一句 —— 荤段子一律不要
+        if not is_private and self.cfg.get("cold_atmosphere_enabled", True):
+            try:
+                _dlg = list(st.dialogue)
+                _prev = _dlg[-2] if len(_dlg) >= 2 else None
+                _gap = max(0.0, time.time() - float((_prev or {}).get("ts") or 0)) if _prev else 0.0
+                _need = float(self.cfg.get("cold_field_gap_sec", 900) or 900)
+                if _gap >= _need:
+                    atmosphere_hint = group_memes.cold_hint(gid, silent_min=_gap)
+                    logger.info("[fish] 群 %s 冷场 %.0f 分钟，走垫场话术", gid, _gap / 60)
+            except Exception as e:
+                logger.debug("[fish] 冷场判定失败：%s", e)
+
         # 时间线走 dialogue 而不是 msgs：模型得看见自己刚说过什么，
         # 否则它会把同一句换个说法又来一遍，或者接话接到自己头上。
         # 条数窗在热闹的群里只等于「最近三分钟」：刚聊透的「神话保底 2000」早就滚出去了，
@@ -189,6 +212,7 @@ class PromptMixin:
                 if gid != "private" else ""),
             meme_hint=meme_hint,
             wiki_hint=wiki_hint,
+            atmosphere_hint=atmosphere_hint,
             budget={
                 "memory": int(self.cfg.get("prompt_budget_memory_max", 2) or 0),
                 "style": int(self.cfg.get("prompt_budget_style_max", 3) or 0),

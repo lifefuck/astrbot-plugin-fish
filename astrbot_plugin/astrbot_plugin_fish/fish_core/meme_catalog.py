@@ -35,6 +35,17 @@ BUCKETS: Dict[str, Tuple[str, ...]] = {
     "干饭": ("干饭",),
 }
 
+# 按「用到什么场合」再分一层：幽默标签是一回事，鱼该在什么气氛里甩哪张是另一回事。
+# 冷场时甩一张嘲讽图等于往冷场里再浇一盆冷水，所以冷场只给卖萌/睡觉/干饭这类没攻击性的。
+SCENES: Dict[str, Tuple[str, ...]] = {
+    "调侃": ("嘲讽", "嫌弃", "得意", "吃瘪", "傲娇"),
+    "接梗": ("震惊", "困惑", "心动", "赞同", "庆祝"),
+    "自嘲": ("委屈", "哭泣", "要饭", "摆烂", "无奈"),
+    "冷场": ("卖萌", "睡觉", "干饭"),
+}
+# 场景桶里挑不到（或图坏了）时的退路：冷场退到卖萌，别的退到本场景第一桶
+SCENE_FALLBACK = {"冷场": ("卖萌", "无奈"), "调侃": ("嘲讽",), "接梗": ("震惊",), "自嘲": ("委屈",)}
+
 # 全角方括号（［］）也要认：模型偶尔用全角，老正则漏掉就把标签原样发进群
 _TAG_RE = re.compile(r"[\[【［]\s*MEME\s*[:：]\s*([^\]】］]{1,12})\s*[\]】］]", re.IGNORECASE)
 
@@ -287,6 +298,28 @@ def pick_b64(tag: str = "", text: str = "") -> Optional[str]:
             if b64:
                 return b64
     return _try_pick(_candidates_for_text(text))
+
+
+def pick_scene_b64(scene: str, text: str = "") -> Optional[str]:
+    """按「场合」挑图：冷场/调侃/接梗/自嘲。
+
+    和 pick_b64 的区别是它吃的是情绪标签，这里吃的是场合 —— 冷场时不能甩嘲讽图。
+    """
+    scene = (scene or "").strip()
+    if scene not in SCENES:
+        return pick_b64("", text)
+    _load()
+    pool: List[dict] = []
+    for emo in SCENES[scene]:
+        pool.extend(_by_emotion.get(emo, []))
+    b64 = _try_pick(pool) if pool else None
+    if b64:
+        return b64
+    for emo in SCENE_FALLBACK.get(scene, ()):
+        b64 = _try_pick(_by_emotion.get(emo, []))
+        if b64:
+            return b64
+    return None
 
 
 def stats() -> Dict[str, int]:

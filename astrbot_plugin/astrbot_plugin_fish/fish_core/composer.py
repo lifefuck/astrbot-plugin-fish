@@ -190,6 +190,7 @@ def build_user_prompt(
     include_timeline: bool = True,
     meme_hint: str = "",
     wiki_hint: str = "",
+    atmosphere_hint: str = "",
     budget: dict | None = None,
 ) -> str:
     """按原项目顺序拼 user prompt。"""
@@ -221,6 +222,11 @@ def build_user_prompt(
         parts.append("（他是在直接跟你说话，必须回）")
     else:
         parts.append("（没人叫你，这句是群友之间的闲聊；插话就一两句，接着话头说）")
+
+    # 气氛怎么补单独一块，且不进 hint 预算：冷场是最需要它的时刻，
+    # 而 hint 预算只有 2 条，排在前面的吵架/跨群一占就把它挤没了
+    if atmosphere_hint:
+        parts.append("\n" + atmosphere_hint)
 
     _b = budget or {}
     _mem_max = int(_b.get("memory", 2) or 0)
