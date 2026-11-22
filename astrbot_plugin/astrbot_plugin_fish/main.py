@@ -377,6 +377,11 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         now = time.time()
         has_image, has_media = self._has_media(event)
         is_at = self._is_at_bot(event)
+        # 指向信号：@ 了谁、引用的是谁、引用的是不是我。
+        # 以前只有一个 bool 概括「@了别人」，判定里塞的是假 uid，引用场景整个看不见
+        at_targets = self._at_targets(event)
+        reply_to_uid = self._reply_to_uid(event)
+        is_quote_bot = self._is_quote_bot(event)
         # 语音单独拎出来：有它就能「听见」，纯语音消息也就不再是空消息
         recs = [c for c in event.message_obj.message
                 if type(c).__name__.lower() == "record"] \
@@ -407,6 +412,18 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
                             self.relations_path)
                     except Exception as e:
                         logger.debug("[fish] 关系网记录失败：%s", e)
+            # 引用也是一次定向互动：只记 @ 的话，关系网里看不到「这句是顺着谁说的」
+            try:
+                _rc = next((c for c in event.message_obj.message
+                            if type(c).__name__.lower() == "reply"), None)
+                _rc_uid = str(getattr(_rc, "sender_id", "") or "") if _rc is not None else ""
+                if _rc_uid and _rc_uid != "0":
+                    cross_interaction.record_interaction(
+                        int(gid), int(uid) if uid.isdigit() else 0, nick,
+                        int(_rc_uid), getattr(_rc, "sender_nickname", "") or "",
+                        self.relations_path)
+            except Exception as e:
+                logger.debug("[fish] 关系网记录（引用）失败：%s", e)
 
         # 时间线与在线学习都要「所有」群消息，包括没人叫它的那些
         # 纯语音也得进时间线：只认 text/图片的话，模型上下文里那条转写就成了
@@ -777,8 +794,12 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             judge_score=(getattr(self, "_last_quality", None) if _ambient else None),
             judge_threshold=0.0,
             ambient_gate_blocked=_gate,
-            # 指向：旧代码用 _talk_to_other 一句话了事，现在作为信号进对象
-            target_uid=("someone_else" if _talk_to_other else ""),
+            # 指向：@ 到的人和引用目标都如实带过去。引用我自己的话等于在跟我说话，
+            # 这时候哪怕同时 @ 了别人，也不该判成「说的是别人」
+            is_quote_bot=bool(is_quote_bot),
+            at_targets=tuple(at_targets),
+            reply_to_uid=str(reply_to_uid or ""),
+            target_uid=("someone_else" if (_talk_to_other and not is_quote_bot) else ""),
             address_evidence=("@别人" if _talk_to_other else ""),
             muted=bool((is_at or forced) and not self.cfg.get("reply_when_at", True)),
             banned=bool(getattr(st, "banned", False)),
@@ -975,7 +996,9 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         # 空上下文：没上文、或只有一条且跟这句接不上时，模型只能靠编——
         # 常见的是把「你们刚才说的那个」当真事接着圆。被叫就先问一句短的让人补，
         # 没人叫就直接不开口。这一条在 decide() 之后，只决定「调不调模型」。
-        if not self._ctx_of(st, event.get_extra("fish_ctxline") or text):
+        # 有引用就别走「你说的啥」：引用原文本身就是这条消息的上下文，
+        # 只看时间线会把「你看这个」判成空上下文，回一句「你说的啥」
+        if not self._ctx_of(st, event.get_extra("fish_ctxline") or text) and not quote_ctx:
             _thin = self._thin_context(st, prompt_text or text)
             if _thin:
                 _ask = bool(self.cfg.get("empty_context_ask_short", True)) and is_at

@@ -33,6 +33,9 @@ from .kernel import *  # noqa: F401,F403
 
 
 class DecisionMixin:
+    # 开口就是「催什么」「急什么」这类问句：同一天说第四遍时群里一眼看出是复读机。
+    # 同样是拆分时留在旧 main 里的类常量，没跟过来就 AttributeError
+    _OPENER_RE = re.compile(r"^(催什么|急什么|叫什么叫|戳什么|问什么|又怎么了)[，,。！!？?\s]*")
     @staticmethod
     def _echoes_hint(text: str, how: str) -> bool:
         """回复是不是把「怎么接」逐字念了一遍。

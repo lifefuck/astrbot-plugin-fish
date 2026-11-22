@@ -56,6 +56,13 @@ case("默认路径inline_PASS", True, "", text="今天好热", is_link=True, jud
 # 14 转发没人叫：不接
 case("转发不接", False, "转发", has_forward=True, text="")
 
+# 14.5 引用我发的消息：等于在跟我说话，要接
+case("引用我要接", True, "引用我", text="你看这个", is_quote_bot=True, reply_to_uid="111", uid="222")
+# 14.6 引用我 + 同时 @ 了别人：仍然要接，不能判成「说的是别人」
+case("引用我且@别人也接", True, "引用我", text="你看这个",
+     is_quote_bot=True, reply_to_uid="111", uid="222",
+     at_targets=("999",), target_uid="", address_evidence="@别人")
+
 # 15 主动质量分不达标：不接（影子比对抓到的真实 bug：带分就一路放行）
 case("主动质量不达标", False, "主动质量", text="今天好热", judge_score=0.47, judge_threshold=0.48)
 # 16 主动质量分达标：走 inline PASS

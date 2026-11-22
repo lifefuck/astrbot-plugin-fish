@@ -33,6 +33,12 @@ from .kernel import *  # noqa: F401,F403
 
 
 class MediaMixin:
+    # 框架把图 / 合并转发解析成这些占位字符串，光看 message_str 等于什么都没看见。
+    # 拆分 Mixin 时这个类常量留在旧 main 里没跟过来，_quote_context 一取引用就
+    # AttributeError，被外层 except 吞成 debug——引用原文整段没进过 prompt
+    _QUOTE_PLACEHOLDERS = ("[图片]", "[聊天记录]", "[转发消息]", "[语音]", "[视频]",
+                           "[文件]", "[动画表情]", "[表情]")
+
     async def _vision_via_framework(self, raws: list) -> str:
         """把图片交给 AstrBot 配好的视觉 provider 描述，失败返回空串（外层转直连）。"""
         pid = str(self.cfg.get("vision_provider_id") or "gemini-vision")

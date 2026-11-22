@@ -36,6 +36,15 @@ jobs:
 
       - name: 顶层导出完整（拆分防丢）
         run: python scripts/check_exports.py
+      - name: 类常量悬空检查（拆 Mixin 防丢）
+        run: python scripts/check_class_attrs.py
+
+      - name: 未定义名字检查
+        run: python scripts/check_names.py
+
+      - name: 开口判定行为测试
+        run: python scripts/test_speak_decision.py
+
       - name: 排版归一化（空格/换行/句号/感叹号）
         run: python scripts/test_typeset.py
 

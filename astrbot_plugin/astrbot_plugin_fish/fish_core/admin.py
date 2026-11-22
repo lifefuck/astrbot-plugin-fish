@@ -81,6 +81,68 @@ class AdminMixin:
             return False
         return False
 
+    @staticmethod
+    def _at_targets(event: AstrMessageEvent) -> tuple:
+        """这条消息 @ 到的其他人：uid 元组，不含 @全体、不含 @我自己。
+
+        以前只有一个「@了别人」的 bool，判定里塞的是假 uid "someone_else"，
+        真要对人说话时拿不出「@的是谁」。这里给真正的 uid 列表。
+        """
+        out: list[str] = []
+        try:
+            self_id = str(event.get_self_id())
+            for comp in (event.message_obj.message or []):
+                if isinstance(comp, At):
+                    qq = str(getattr(comp, "qq", "") or "")
+                    if qq and qq not in ("all", self_id) and qq not in out:
+                        out.append(qq)
+            if not out:
+                # 组件被唤醒检查摘掉时，翻原始段兜底
+                raw = getattr(event.message_obj, "raw_message", None)
+                segs = getattr(raw, "message", None)
+                if segs is None and isinstance(raw, dict):
+                    segs = raw.get("message")
+                for seg in (segs or []):
+                    if isinstance(seg, dict) and seg.get("type") == "at":
+                        qq = str((seg.get("data") or {}).get("qq") or "")
+                        if qq and qq not in ("all", self_id) and qq not in out:
+                            out.append(qq)
+        except Exception:
+            return ()
+        return tuple(out)
+
+    @staticmethod
+    def _reply_to_uid(event: AstrMessageEvent) -> str:
+        """引用/回复的是谁（uid 字符串）。拿不到（撤回、过旧、无权限）给空串。
+
+        Reply.sender_id 为 0 就是拿不到——这时候只能靠 quote_ctx 的文本兜底，
+        不能瞎猜一个 uid。
+        """
+        try:
+            for comp in (event.message_obj.message or []):
+                if isinstance(comp, Reply):
+                    sid = str(getattr(comp, "sender_id", "") or "")
+                    return sid if sid and sid != "0" else ""
+        except Exception:
+            return ""
+        return ""
+
+    @staticmethod
+    def _is_quote_bot(event: AstrMessageEvent) -> bool:
+        """引用的是我自己发的消息。
+
+        _is_at_bot 把「@我」和「引用我」混成一个 bool，这里单独拆出来：
+        引用我的话等于在跟我说话，哪怕句子里同时 @ 了别人。
+        """
+        try:
+            self_id = str(event.get_self_id())
+            for comp in (event.message_obj.message or []):
+                if isinstance(comp, Reply) and str(getattr(comp, "sender_id", "") or "") == self_id:
+                    return True
+        except Exception:
+            return False
+        return False
+
     def _has_media(self, event: AstrMessageEvent) -> tuple[bool, bool]:
         has_image = has_media = False
         for comp in event.message_obj.message:

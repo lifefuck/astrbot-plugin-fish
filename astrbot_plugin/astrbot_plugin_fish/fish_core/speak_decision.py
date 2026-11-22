@@ -34,6 +34,7 @@ PRIO_FOLLOW = 2       # 追问窗口内
 PRIO_CALLED = 3       # 被 @ / 唤醒前缀 / 被骂到头上
 
 MODE_AT = "被@"
+MODE_QUOTE = "引用我"
 MODE_WAKE = "手打前缀"
 MODE_ABUSE = "被骂"
 MODE_FOLLOW = "追问窗口"
@@ -169,6 +170,10 @@ def decide(sig: Signals, cfg: Optional[Dict[str, Any]] = None) -> SpeakDecision:
         prio, mode = PRIO_CALLED, MODE_ABUSE
     elif sig.is_at:
         prio, mode = PRIO_CALLED, MODE_AT
+    elif sig.is_quote_bot:
+        # 引用我发的消息 = 在跟我说话，哪怕句子里同时 @ 了别人。
+        # 以前这种情况走「@了别人→说的是别人」被吞掉，明明是在让我看东西
+        prio, mode = PRIO_CALLED, MODE_QUOTE
     elif sig.is_wake:
         prio, mode = PRIO_CALLED, MODE_WAKE
     elif sig.is_follow:
@@ -176,6 +181,8 @@ def decide(sig: Signals, cfg: Optional[Dict[str, Any]] = None) -> SpeakDecision:
     elif sig.is_link:
         prio, mode = PRIO_PROACTIVE, MODE_PROACTIVE
     notes["被@"] = sig.is_at
+    notes["引用我"] = sig.is_quote_bot
+    notes["@了"] = list(sig.at_targets)
     notes["手打前缀"] = sig.is_wake
     notes["被骂"] = abused_ok
     notes["追问"] = sig.is_follow
