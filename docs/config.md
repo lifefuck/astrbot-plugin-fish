@@ -64,7 +64,8 @@
 | `vision_wb_enable` | `true` | 识图先走 WB 池（本地 3425 网关）。Gemini 常年限流，群里发图就瞎。WB 池实测 2.6~4.3s 出描述、连打 6 发不限流，所以放第一位，Gemini 只当兜底。 |
 | `vision_wb_base` | `http://127.0.0.1:3425/v1` | WB 网关地址 |
 | `vision_wb_key` | - | WB 网关密钥（本地网关留空即可） |
-| `vision_wb_models` | `["wb/glm-5v-turbo", "wb/minimax-m3.1-flash"]` | WB 识图模型顺序。glm-5v-turbo 是视觉专用模型，2.8s 出描述、读数字最准；minimax-m3.1-flash 同延迟兜底。别用 glm-5.1/5.2/5.3，会把 7392 念成 7.392。 |
+| `vision_wb_models` | `["wb/glm-5v-turbo", "wb/minimax-m3", "google/models/gemini-flash-lite-latest"]` | WB 识图模型顺序。glm-5v-turbo 是视觉专用模型，读数字最准；后面两个是实测过的备胎（同一张截图关键词 8/8 全对、3.4~3.5s）。别用 minimax-m3.1-flash，它只吐英文思考碎片、等于没有备胎；也别用 glm-5.1/5.2/5.3，会把 7392 念成 7.392。 |
+| `vision_wb_timeout_sec` | `16` | 单个识图模型超时（秒）。实测成功最慢 9.6s，钉死 10s 会让长尾那几次直接 TimeoutError、整条链路空手而归。真正的天花板是 vision_total_budget_sec。 |
 | `vision_total_budget_sec` | `20` | 识图总预算（秒）。一张图最多等这么久，超了就按没有图继续回。 |
 | `vision_proxy` | `http://127.0.0.1:7890` | 访问 Google 的代理。留空 = 直连。国内机器基本都得填。 |
 | `vision_api_key` | - | Gemini 密钥（可选）。优先级：环境变量 > vision_key_env_file > 这里。建议留空，用 env 文件。 |

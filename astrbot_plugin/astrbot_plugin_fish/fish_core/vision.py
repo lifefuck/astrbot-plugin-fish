@@ -462,7 +462,10 @@ async def _one_model(session: aiohttp.ClientSession, key: str, model: str, parts
 # 上的 glm-5v-turbo / minimax-m3.1-flash 实测 2.6~4.3s 出描述、连打 6 发不限流，
 # 所以默认先走它，Gemini 的框架通道和直连链降级到后面当兜底。
 _WB_DEFAULT_BASE = "http://127.0.0.1:3425/v1"
-_WB_DEFAULT_MODELS = ["wb/glm-5v-turbo", "wb/minimax-m3.1-flash"]
+# 备胎必须自己会说中文、直接给结果：m3.1-flash 会把思考过程吐在 reasoning_content 里
+# （"We need describe under 60 Chinese chars..."），被当碎片跳过，等于没有备胎。
+# 这两个是实测过的：同一张截图 8/8 关键词全对，3.4~3.5s。
+_WB_DEFAULT_MODELS = ["wb/glm-5v-turbo", "wb/minimax-m3", "google/models/gemini-flash-lite-latest"]
 
 # 有的 WB 模型（实测 minimax-m3.1-flash 偶尔）会把「思考过程」当正文吐出来，
 # 原样塞进 prompt 就是一句「We need inspect tiny image. Need exact text」——
@@ -551,8 +554,11 @@ async def _describe_wb(images: list[bytes], cfg: dict, logger=None,
             if logger:
                 logger.warning("[fish] WB 视觉放弃：已用 %.1fs 超过预算 %.0fs", used, budget)
             break
-        # 冷启动那次 glm 实测要 8.6 秒，给到 10 秒，别把主力模型的第一发判死
-        per_model = max(1.0, min(10.0, budget - used))
+        # 原来钉死 10 秒：三天空转 73 次里成功最慢的一次是 9.6 秒，
+        # 也就是超时线正卡在长尾上，3 次 TimeoutError 全是这么来的。
+        # 改成可配、默认 16 秒，长尾能活下来；总预算仍然卡着，不会无限等。
+        cap = float(cfg.get("vision_wb_timeout_sec", 16) or 16)
+        per_model = max(1.0, min(cap, budget - used))
         t0 = time.time()
         try:
             text = await _one_model_openai(session, base, key, model, imgs, per_model)

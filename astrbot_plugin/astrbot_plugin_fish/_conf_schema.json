@@ -354,14 +354,22 @@
         "type": "list",
         "default": [
           "wb/glm-5v-turbo",
-          "wb/minimax-m3.1-flash"
+          "wb/minimax-m3",
+          "google/models/gemini-flash-lite-latest"
         ],
-        "hint": "glm-5v-turbo 是视觉专用模型，2.8s 出描述、读数字最准；minimax-m3.1-flash 同延迟兜底。别用 glm-5.1/5.2/5.3，会把 7392 念成 7.392。",
+        "hint": "glm-5v-turbo 是视觉专用模型，读数字最准；后面两个是实测过的备胎（同一张截图关键词 8/8 全对、3.4~3.5s）。别用 minimax-m3.1-flash，它只吐英文思考碎片、等于没有备胎；也别用 glm-5.1/5.2/5.3，会把 7392 念成 7.392。",
         "items": [
           "wb/glm-5v-turbo",
-          "wb/minimax-m3.1-flash",
+          "wb/minimax-m3",
+          "google/models/gemini-flash-lite-latest",
           "wb/mimo-v2.6-pro"
         ]
+      },
+      "vision_wb_timeout_sec": {
+        "description": "单个识图模型超时（秒）",
+        "type": "int",
+        "default": 16,
+        "hint": "实测成功最慢 9.6s，钉死 10s 会让长尾那几次直接 TimeoutError、整条链路空手而归。真正的天花板是 vision_total_budget_sec。"
       },
       "vision_total_budget_sec": {
         "description": "识图总预算（秒）",
