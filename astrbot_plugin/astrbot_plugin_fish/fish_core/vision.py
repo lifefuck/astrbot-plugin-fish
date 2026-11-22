@@ -570,7 +570,7 @@ async def _describe_wb(images: list[bytes], cfg: dict, logger=None,
     key = str(cfg.get("vision_wb_key") or "")
     # 预算按「整条降级链共用一个 deadline」算：以前每个阶段各自起一个 started，
     # 最坏 20(WB)+20(Gemini)+框架通道，一张图能把回复拖到半分钟
-    budget = (deadline - time.time()) if deadline else float(cfg.get("vision_total_budget_sec", 12) or 12)
+    budget = (deadline - time.time()) if deadline else float(cfg.get("vision_total_budget_sec", 20) or 20)
     if budget <= 0.5:
         if logger:
             logger.warning("[fish] 视觉跳过 WB：总预算已用完")
@@ -648,7 +648,7 @@ async def _describe_raw(images: list[bytes], cfg: dict, logger=None) -> str:
     if not images:
         return ""
     # 整条降级链共用一个 deadline，阶段之间只吃剩下的时间
-    budget = float(cfg.get("vision_total_budget_sec", 12) or 12)
+    budget = float(cfg.get("vision_total_budget_sec", 20) or 20)
     deadline = time.time() + budget
     # 顺序：WB 池（快、不限流）→ 框架 provider（Gemini）→ 直连 Gemini
     via_wb = await _describe_wb(images, cfg, logger=logger, deadline=deadline)

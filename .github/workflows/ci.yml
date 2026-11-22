@@ -85,5 +85,8 @@ jobs:
       - name: P1 回归（透明图/巨图/告状冷却/纠错阈值/印象落盘）
         run: python scripts/test_p1_fixes.py
 
+      - name: P2 回归（谐音边界/冷场/时钟回拨/拆条字数/权限/炸弹边界）
+        run: python scripts/test_p2_fixes.py
+
       - name: 自检（纯函数，不联网）
         run: python astrbot_plugin/astrbot_plugin_fish/scripts/selfcheck.py

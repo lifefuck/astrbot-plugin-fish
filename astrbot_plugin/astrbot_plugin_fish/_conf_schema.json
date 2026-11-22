@@ -77,7 +77,7 @@
       "max": 1,
       "step": 0.05
     },
-    "hint": "越高门槛越低。0.30 → 质量门槛 0.62（普通闲聊不接，提问/玩梗/点名才接）；0.60 → 门槛 0.38（几乎每条都插一句）。"
+    "hint": "越高门槛越低。0.30 → 质量门槛 0.62（普通闲聊不接，提问/玩梗/点名才接）；0.60 → 门槛 0.40（公式算出来是 0.38，被下限夹到 0.40，也就是几乎每条都插一句）。"
   },
   "interject_hourly_cap": {
     "description": "每小时主动插话上限",
@@ -699,7 +699,7 @@
       "addressee_gray_threshold": {
         "type": "int",
         "default": 40,
-        "description": "灰区下限：分数在灰区以上但没到阈值时，只有追问窗口内且判官过线才放行，否则默认不是"
+        "description": "灰区下限：分数落在灰区以上但没到阈值时，交给判官裁决——判官过线就放行，没过线默认不是"
       },
       "addressee_thread_window_sec": {
         "type": "int",
@@ -715,6 +715,11 @@
         "type": "bool",
         "default": true,
         "description": "从真实 At 昵称和群名片学别名（只学不猜，不从聊天里编外号）"
+      },
+      "topic_hint_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "把判官读出的「这句在说啥」当释义注入表达层（只给释义不给接法）；发现闲聊被带成解说腔就关掉"
       },
       "scheduler_default_silent": {
         "description": "默认不说",

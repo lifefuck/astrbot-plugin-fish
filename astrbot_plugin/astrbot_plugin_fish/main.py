@@ -174,7 +174,7 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
 
         # 控制台用的最近事件环形缓冲：老面板那栏「实时交互日志」搬到面板里，
         # 不再自己维护一份文件，进程重启就重来，够看就行
-        self._events: deque = deque(maxlen=int(self.cfg.get("panel_event_buffer", 200) or 200))
+        self._events: deque = deque(maxlen=cfg_int(self.cfg, "panel_event_buffer", 200))
         # 群级 override：面板改的开关落在这个文件，跟 AstrBot 全局配置分开，
         # 面板改错也只是这一项，不会把整份插件配置写坏
         self.overrides_path = DATA_DIR / "group_overrides.json"
@@ -217,8 +217,8 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
 
         logger.info("[fish] 拆条 %s（%d 字起拆，最多 %d 条）；两步生成 %s；看图 %s（%s）",
                     "开" if self.cfg.get("split_enabled", True) else "关",
-                    int(self.cfg.get("split_max_chars", 60) or 60),
-                    int(self.cfg.get("split_max_parts", 3) or 3),
+                    cfg_int(self.cfg, "split_max_chars", 45),
+                    cfg_int(self.cfg, "split_max_parts", 3),
                     "开" if self.cfg.get("social_read_enabled", True) else "关",
                     "开" if self.cfg.get("vision_enabled", True) else "关",
                     # 识图实际先走 WB 池，日志里打真实顺序，别让人以为还在用 Gemini
@@ -329,8 +329,15 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         # 会把后到的真消息当重复静默丢掉（日志还写「重复投递」，排查会跑偏）
         _mid = getattr(event.message_obj, "message_id", "") or ""
         # 没有 message_id 时不能拼成「群号:」当作 key：那样 180 秒内该群所有消息
-        # 都会被判成重复、直接 stop_event 丢掉
-        if _mid and self._seen_mid("%s:%s" % (gid, _mid)):
+        # 都会被判成重复、直接 stop_event 丢掉。退化成内容指纹：群 + 发送人 + 正文，
+        # 重连补投同一条能挡住，同一人正常连发不同内容不受影响
+        if not _mid:
+            try:
+                _sender = str(event.get_sender_id() or "")
+            except Exception:
+                _sender = ""
+            _mid = "h|%s|%s|%s" % (gid, _sender, (getattr(event, "message_str", "") or "")[:80])
+        if self._seen_mid("%s:%s" % (gid, _mid)):
             logger.info("[fish] 群 %s 收到重复投递的消息，忽略", gid)
             event.stop_event()
             return
@@ -371,7 +378,12 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         if _is_builtin_cmd(text):
             logger.debug("[fish] 群 %s 让路给自带指令：%s", gid, text[:20])
             return
-        prefixes = tuple(self.cfg.get("command_prefixes") or ())
+        # 写成字符串时不能直接 tuple()：tuple("ab!") 是 ('a','b','!')，
+        # 于是任何以 a/b/! 开头的消息都被当面板指令跳过
+        _pfx = self.cfg.get("command_prefixes") or ()
+        if isinstance(_pfx, str):
+            _pfx = [p.strip() for p in re.split(r"[,，\s]+", _pfx) if p.strip()]
+        prefixes = tuple(str(p) for p in _pfx)
         if text.startswith(prefixes):
             # 云崽/面板指令归别的插件，原项目铁律是静默。这里只「不接话」，
             # 不能 stop_event——那会把下游别的插件的同名指令一起掐死

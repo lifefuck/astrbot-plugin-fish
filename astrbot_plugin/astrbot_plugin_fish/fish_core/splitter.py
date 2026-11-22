@@ -104,11 +104,23 @@ def _pack_sentences(text: str, max_parts: int, max_chars: int) -> list[str]:
     flat: list[str] = []
     for s in sents:
         flat.extend(_hard_cut(s, max_chars) if len(s) > max_chars * 2 else [s])
-    n = len(flat)
-    if n <= max_parts:
-        return ["".join(flat)]
-    per = -(-n // max_parts)   # 向上取整
-    return ["".join(flat[i:i + per]) for i in range(0, n, per)][:max_parts]
+    # 按字数装箱，而不是按 n/max_parts 均分：均分会让每条都超过 max_chars
+    # （实测 167 字 / 3 条 → 84+83，等于字数上限形同虚设）
+    out: list[str] = []
+    cur = ""
+    for s in flat:
+        if cur and len(cur) + len(s) > max_chars:
+            out.append(cur)
+            cur = s
+        else:
+            cur += s
+    if cur:
+        out.append(cur)
+    # max_parts=1 是「只发一条」的硬约束，宁可超字数也不能多发；其余情况
+    # 字数优先——多甩一条短的比发一坨 84 字的墙好看
+    if len(out) > max_parts and max_parts <= 1:
+        return ["".join(out)]
+    return out
 
 
 def _fold_tail(parts: list[str], max_parts: int, max_chars: int) -> list[str]:
@@ -191,7 +203,7 @@ def _merge_stubs(parts: list[str]) -> list[str]:
     return out
 
 
-def split_reply(text: str, max_chars: int = 26, max_parts: int = 3, min_tail: int = 3) -> list[str]:
+def split_reply(text: str, max_chars: int = 45, max_parts: int = 3, min_tail: int = 3) -> list[str]:
     """返回 1~max_parts 条待发文本。短于阈值时原样返回单条。
 
     换行是硬边界：模型自己按「一条一个意思」换的行，不允许再被合并回一条。
@@ -243,8 +255,11 @@ def split_reply(text: str, max_chars: int = 26, max_parts: int = 3, min_tail: in
         parts.append(cur)
 
     if len(parts) >= 2 and len(parts[-1].strip()) < min_tail:
-        parts[-2] += parts[-1]
-        parts.pop()
+        # 回吞会把前一条顶过 max_chars（45+2=47）——短尾巴和字数上限里，
+        # 守上限：孤零零两个字发一条，比顶破长度更像人
+        if len(parts[-2]) + len(parts[-1]) <= max_chars:
+            parts[-2] += parts[-1]
+            parts.pop()
 
     parts = _fold_tail(parts, max_parts, max_chars)
 

@@ -33,6 +33,12 @@ def decide(
     """
     if not enabled:
         return True, "闸门关"
+    # 时钟回拨 / 未来时间戳：now - ts 成负数会一直小于门限，
+    # 一次 NTP 校正就能把表情包锁死几小时。异常时间戳一律当没记录
+    if last_meme_ts > now:
+        last_meme_ts = 0.0
+    if incoming_image_ts > now:
+        incoming_image_ts = 0.0
     if min_gap_sec > 0 and last_meme_ts and now - last_meme_ts < min_gap_sec:
         return False, f"距上一张表情包 {int(now - last_meme_ts)}s，不足 {int(min_gap_sec)}s"
     if follow_gap_sec > 0 and incoming_image_ts and now - incoming_image_ts < follow_gap_sec:

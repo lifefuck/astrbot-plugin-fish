@@ -31,7 +31,12 @@ def snapshot_json(path: str, keep: int = 3, min_interval: float = 600.0) -> None
         if olds and time.time() - os.path.getmtime(olds[-1]) < min_interval:
             return
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        shutil.copy2(path, f"{path}.bak-{stamp}")
+        bak = f"{path}.bak-{stamp}"
+        shutil.copy2(path, bak)
+        try:
+            os.chmod(bak, 0o600)   # copy2 原样搬权限，源文件是 664 备份也是
+        except OSError:
+            pass
         for old in sorted(glob.glob(f"{path}.bak-*"))[:-max(1, keep)]:
             os.remove(old)
     except Exception as e:

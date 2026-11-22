@@ -622,7 +622,7 @@ class RespondMixin:
                 logger.debug("[fish] 心境取条数失败：%s", e)
             parts = splitter.split_reply(
                 final,
-                max_chars=int(self.cfg.get("split_max_chars", 26) or 26),
+                max_chars=cfg_int(self.cfg, "split_max_chars", 45),
                 max_parts=max(1, max_parts),
             ) or [final]
         # 拆条之后逐条收口：每条最多一个换行，10 字内去掉句尾句号，感叹号/表情各留一个。

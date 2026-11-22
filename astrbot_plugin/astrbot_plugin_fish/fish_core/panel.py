@@ -202,7 +202,7 @@ class PanelApi:
             "cross_topics": len(getattr(self.p, "cross").topics) if getattr(self.p, "cross", None) else 0,
             "switches": {
                 "interject_desire": float(cfg.get("interject_desire", 0.3) or 0.3),
-                "interject_cooldown_sec": int(cfg.get("interject_cooldown_sec", 300) or 300),
+                "interject_cooldown_sec": int(cfg.get("interject_cooldown_sec", 120) or 120),
                 "interject_hourly_cap": int(cfg.get("interject_hourly_cap", 8) or 8),
                 "social_read": bool(cfg.get("social_read_enabled", True)),
                 "split": bool(cfg.get("split_enabled", True)),

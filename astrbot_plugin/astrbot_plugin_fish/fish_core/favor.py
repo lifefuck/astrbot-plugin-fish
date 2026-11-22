@@ -22,7 +22,28 @@ import os
 import re
 import time
 
-import backup
+def _load_backup():
+    """按路径加载 backup，不依赖 sys.path。
+
+    以前 kernel 把 fish_core 插进 sys.path，好让 `import backup` 能用；
+    副作用是 backup/vision/prompt 变成进程级通用名字，别的插件
+    `import backup` 会拿到本插件的模块。这里只认带前缀的限定名。
+    """
+    import importlib.util
+    import sys
+    from pathlib import Path
+    name = "astrbot_plugin_fish_backup"
+    m = sys.modules.get(name)
+    if m is None:
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).with_name("backup.py"))
+        m = importlib.util.module_from_spec(spec)
+        sys.modules[name] = m
+        spec.loader.exec_module(m)
+    return m
+
+
+backup = _load_backup()
 
 _logger = logging.getLogger(__name__)
 

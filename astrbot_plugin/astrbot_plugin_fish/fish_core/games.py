@@ -49,7 +49,7 @@ def get_group_game(group_id: int) -> Optional[dict]:
     返回的是内存里的活对象（和旧版一致），调用方只读，别改 low/high，
     改了状态机的不变式 low < target < high 就破了。
     """
-    return active_games.get(group_id)
+    return active_games.get(int(group_id))
 
 
 def sweep_expired(now: Optional[float] = None) -> int:
@@ -134,6 +134,9 @@ def process_number_bomb(group_id: int, text: str, user_id: int,
     user_id 目前不参与判定（旧版就没用），留着是为了调用方签名一致，
     将来要加「同一个人不能连猜」时直接拿它。
     """
+    # 群号统一成 int：调用方有的地方传 str(gid)，键类型不一致会在同一个群里
+    # 开出两局炸弹，各自记各自的区间
+    group_id = int(group_id)
     t = text.strip()
     now = time.time()
 
@@ -178,7 +181,9 @@ def process_number_bomb(group_id: int, text: str, user_id: int,
 
         # 区间是开区间：low/target/high 三个值里，low 和 high 是已经排除掉的
         if val <= low or val >= high:
-            return True, f"数字得在 {low} ~ {high} 之间"
+            # 区间是开区间，low/high 自己已经被排除。旧提示写「在 low ~ high 之间」，
+            # 猜 low 的人看到「要猜 1~100」会接着猜 1，来回死循环还觉得自己没错
+            return True, f"超出范围啦，能猜的是 {low + 1} ~ {high - 1} 之间的整数"
 
         game["guesses"] += 1
         game["last_active"] = now

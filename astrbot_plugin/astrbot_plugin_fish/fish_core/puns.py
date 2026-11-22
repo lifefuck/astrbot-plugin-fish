@@ -76,7 +76,16 @@ def note(text: str, limit: int = 2):
     matched = []
     # 1. 字面：图上直接写了谐音写法。长的优先，否则「蚌埠住了」会连带吐出「蚌埠」
     for key, real in sorted(TABLE.items(), key=lambda kv: -len(kv[0])):
-        if key not in text or real in text:
+        if real in text:
+            continue
+        if key.isdigit():
+            # 数字谐音必须独立出现：「8861」「第520条消息」里的子串不是人在玩梗。
+            # 以前按子串匹配，图里随便一个六位数都能被判成「拜拜了」
+            if not re.search(
+                rf"(?<![0-9A-Za-z\u4e00-\u9fff]){key}(?![0-9A-Za-z\u4e00-\u9fff])", text
+            ):
+                continue
+        elif key not in text:
             continue
         if any(key in m for m in matched):
             continue

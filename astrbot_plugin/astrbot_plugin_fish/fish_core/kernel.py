@@ -140,8 +140,9 @@ PLUGIN_DIR = Path(__file__).resolve().parent.parent
 
 FISH_CORE = PLUGIN_DIR / "fish_core"
 
-if str(FISH_CORE) not in sys.path:
-    sys.path.insert(0, str(FISH_CORE))
+# 曾经这里 sys.path.insert(0, FISH_CORE)，让 fish_core 里的模块能 `import backup`。
+# 副作用是 backup/vision/prompt 成了进程级通用名，别家插件 import 到的是本插件的。
+# 现在一律走 _load() 的限定名，路径不再进 sys.path
 
 DATA_DIR = PLUGIN_DIR / "data"
 
@@ -303,6 +304,8 @@ DEFAULTS = {
     # 300 秒的冷却把主动接话几乎掐死了：24 小时里 1523 次「刚说过话，冷却中」
     # 只换来 32 次插话。120 秒既能防插话刷屏，又有小时上限 8 次兜底
     "interject_cooldown_sec": 120,
+    "panel_event_buffer": 200,
+    "topic_hint_enabled": True,   # 判官给的话题释义注入表达层；关掉就退回不带释义
     "reply_when_at": True,
     "reply_private": True,
     "meme_enabled": True,
@@ -448,7 +451,10 @@ def _write_json(path: str, data, pretty: bool = False) -> None:
     """
     backup.snapshot_json(str(path))
     tmp = str(path) + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    # 0600：这些文件里有好感度、记忆、别人说过的话，机器上还有别的账号，
+    # 默认 umask 002 会写成 664（全机可读）
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2 if pretty else None)
     os.replace(tmp, path)
 
@@ -792,6 +798,21 @@ def _handler_guard(fn):
     return wrapper
 
 
+def cfg_int(cfg: dict, key: str, default: int) -> int:
+    """取整数配置，0 是合法值。
+
+    `cfg.get(key, 45) or 45` 这种写法会把 0 当成「没配」，于是 split_max_chars=0
+    （配置文档里写的「不拆」）实际变成最激进的拆法。空串/None 才回落到默认。
+    """
+    v = cfg.get(key, default)
+    if v is None or v == "" or isinstance(v, bool):
+        return int(default)
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return int(default)
+
+
 def flatten_conf(raw: dict) -> dict:
     """把配置的对象分组摊平成扁平键。
 
@@ -808,4 +829,4 @@ def flatten_conf(raw: dict) -> dict:
     return flat
 
 
-__all__ = ["ToolSet", "_guess_lan_ip", "_URL_RE", "_ASK_OPINION_RE", "_REALTIME_RE", "_NO_SEARCH_RE", "_EXPLICIT_SEARCH_RE", "_VAGUE_Q", "_usage_of", "_search_query", "PLUGIN_DIR", "FISH_CORE", "DATA_DIR", "_warm_png_b64", "_WARM_PNG", "_load", "affect", "favor", "poke_context", "anti_template", "interject_planner", "style_learner", "meme_catalog", "group_memes", "typeset", "addressee", "scheduler", "generator", "tease", "presence", "meme_gate", "prompts", "composer", "quarrel", "insult_actions", "interject_score", "fish_memory", "splitter", "token_report", "token_card", "vision", "hearing", "pixiv", "_media_parser_pixiv_cookie", "meme_gen", "order_watch", "social_read", "peer_bots", "cross_memory", "panel_api", "admin_actions", "yunzai_link", "backup", "games", "fun_features", "connectors", "safety_guard", "cross_interaction", "memory_atoms", "meme_manager", "DEFAULTS", "MEME_PATH", "_noop", "_write_json", "_POKE_BACK_TS", "_pick_poke", "_BUILTIN_COMMANDS", "_SONG_INTENT_RE", "_SONG_STOP_WORDS", "_SEARCH_MARK_RE", "_SEARCH_LEFTOVER_RE", "_PIXIV_MARK_RE", "_PIXIV_LEFTOVER_RE", "_ImgRef", "_TAG_ONLY_RE", "_SONG_META_HEAD", "_SONG_META_CONTAINS", "_parse_song_request", "_MEME_ASK_RE", "_meme_ask_term", "_REPORT_RE", "_extract_report", "_TATTLE_RE", "_is_tattle_request", "_is_builtin_cmd", "_poke_back", "_ASK_FAVOR_RE", "_TECH_TOKEN_RE", "GroupState", "_poke_aimed_at_me", "_UNSET", "_handler_guard", "flatten_conf", "NO_TOOLS"]
+__all__ = ["ToolSet", "cfg_int", "_guess_lan_ip", "_URL_RE", "_ASK_OPINION_RE", "_REALTIME_RE", "_NO_SEARCH_RE", "_EXPLICIT_SEARCH_RE", "_VAGUE_Q", "_usage_of", "_search_query", "PLUGIN_DIR", "FISH_CORE", "DATA_DIR", "_warm_png_b64", "_WARM_PNG", "_load", "affect", "favor", "poke_context", "anti_template", "interject_planner", "style_learner", "meme_catalog", "group_memes", "typeset", "addressee", "scheduler", "generator", "tease", "presence", "meme_gate", "prompts", "composer", "quarrel", "insult_actions", "interject_score", "fish_memory", "splitter", "token_report", "token_card", "vision", "hearing", "pixiv", "_media_parser_pixiv_cookie", "meme_gen", "order_watch", "social_read", "peer_bots", "cross_memory", "panel_api", "admin_actions", "yunzai_link", "backup", "games", "fun_features", "connectors", "safety_guard", "cross_interaction", "memory_atoms", "meme_manager", "DEFAULTS", "MEME_PATH", "_noop", "_write_json", "_POKE_BACK_TS", "_pick_poke", "_BUILTIN_COMMANDS", "_SONG_INTENT_RE", "_SONG_STOP_WORDS", "_SEARCH_MARK_RE", "_SEARCH_LEFTOVER_RE", "_PIXIV_MARK_RE", "_PIXIV_LEFTOVER_RE", "_ImgRef", "_TAG_ONLY_RE", "_SONG_META_HEAD", "_SONG_META_CONTAINS", "_parse_song_request", "_MEME_ASK_RE", "_meme_ask_term", "_REPORT_RE", "_extract_report", "_TATTLE_RE", "_is_tattle_request", "_is_builtin_cmd", "_poke_back", "_ASK_FAVOR_RE", "_TECH_TOKEN_RE", "GroupState", "_poke_aimed_at_me", "_UNSET", "_handler_guard", "flatten_conf", "NO_TOOLS"]

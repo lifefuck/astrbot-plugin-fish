@@ -53,14 +53,14 @@ class PromptMixin:
                 _req = bool(self.cfg.get("memory_source_required", True))
                 recalled = await asyncio.to_thread(
                     self.memory.recall, gid, uid, text,
-                    int(self.cfg.get("memory_recall_topk", 2)), 14.0,
+                    cfg_int(self.cfg, "memory_recall_topk", 4), 14.0,
                     "active" if _req else "passive")
                 # 主动召回没命中、而这句又是在问事：放宽到「有话题重合就许引用」。
                 # 只降一档、不放开无来源的条目——问到才提，跟前一条规则不冲突
                 if not recalled and _req and re.search(r"[?？]|吗|么|啥|什么|几|哪|怎么|为什么", text or ""):
                     recalled = await asyncio.to_thread(
                         self.memory.recall, gid, uid, text,
-                        int(self.cfg.get("memory_recall_topk", 2)), 14.0, "passive")
+                        cfg_int(self.cfg, "memory_recall_topk", 4), 14.0, "passive")
                     if recalled:
                         logger.info("[fish] 记忆改用被动召回：%d 条", len(recalled))
                 # 过滤碎片、近重去重、带出处，全在 fish_memory.shape_recalled 一处
@@ -285,7 +285,11 @@ class PromptMixin:
         if self.cfg.get("debug_dump_prompt"):
             try:
                 body = "=== system ===\n" + system_prompt + "\n\n=== user ===\n" + user_prompt
-                (DATA_DIR / "last_prompt.txt").write_text(body, encoding="utf-8")
+                _lp = DATA_DIR / "last_prompt.txt"
+                _lp.write_text(body, encoding="utf-8")
+                # 整个系统提示词（含记忆和别人原话）落在盘上，umask 002 下是 664，
+                # 机器上其他账号能直接读
+                os.chmod(_lp, 0o600)
                 # 每次留一份带时间戳的档：last_prompt 只留最后一次，回头看「心境/记忆到底进没进」
                 # 就没证据了，尤其是要贴给别人的时候
                 arch = DATA_DIR / "prompt_archive"

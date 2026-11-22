@@ -35,7 +35,9 @@ def adjust(score: float, *, now: float, last_bot_reply: float,
     if msgs_since_bot >= 6:
         score *= 1.10
         reasons.append("刷屏")
-    elif msgs_since_bot <= 1 and gap > 10 * 60:
+    elif msgs_since_bot <= 1 and gap > 10 * 60 and last_bot_reply:
+        # 只有真开过口才算「冷场」：从没说过话的群 gap 是 1e9，
+        # 以前被当成冷场罚 0.85，跟「冷场该主动开口」的意图正好拧着
         score *= 0.85
         reasons.append("冷场")
 
