@@ -10,6 +10,7 @@
 """
 import hashlib
 import re
+from pathlib import Path
 import json
 import os
 import sys
@@ -49,7 +50,14 @@ _MUST_EXIST = ("GroupState", "_ImgRef", "_UNSET", "DEFAULTS", "PLUGIN_DIR", "DAT
 
 
 def check_exports():
-    missing = [n for n in _MUST_EXIST if not hasattr(M, n)]
+    # 清单来自拆分前 main.py 的顶层名（scripts/main_exports.txt，由
+    # scripts/check_exports.py 在 CI 里静态核对）。线上跑到才炸的那类事故，
+    # 静态能查的这步兜住，这里再验一遍真实命名空间。
+    extra = []
+    man = Path(__file__).resolve().parents[3] / "scripts" / "main_exports.txt"
+    if man.exists():
+        extra = [ln.strip() for ln in man.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    missing = [n for n in tuple(_MUST_EXIST) + tuple(extra) if not hasattr(M, n)]
     # 只查「名字在不在」抓不到装饰器丢失：@dataclass 那行被吞掉时，
     # 类是建出来了，但字段全是 Field 对象，跑到 .append 才炸。这里直接验实例
     st = M.GroupState()
