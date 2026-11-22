@@ -62,11 +62,17 @@ def parse_duration(text: str) -> tuple[int, str]:
     return max(60, min(n * mult, 12 * 3600)), (text[:m.start()] + text[m.end():])
 
 
+AMBIGUOUS = "__ambiguous__"
+
+
 def resolve_target(text: str, nick_map: dict, at_ids: list | None = None):
     """把「小明」「老王」「@张三」对回 QQ 号。
 
     nick_map: {uid: 昵称}，调用方用最近发言的人拼出来即可，不必拉全群成员。
     at_ids:   消息里 @ 到的人（有它就最准，直接命中）。
+
+    命中多个同名的人时返回 (AMBIGUOUS, "小明")：群里两个「小明」很常见，
+    静默取第一个就是禁错人，责任比「多问一句」大得多。
     """
     body = re.sub(r"[\s，。！？!?~～]", "", text or "")
     if at_ids:
@@ -74,9 +80,14 @@ def resolve_target(text: str, nick_map: dict, at_ids: list | None = None):
             if uid and uid.isdigit():
                 return uid, nick_map.get(uid) or uid
     # 长的先匹配，避免「阿明」命中「阿明明」
-    for uid, nick in sorted(nick_map.items(), key=lambda kv: -len(str(kv[1]))):
-        if nick and str(nick) in body:
-            return str(uid), str(nick)
+    cands = sorted(((str(u), str(n)) for u, n in nick_map.items() if n and str(n) in body),
+                   key=lambda kv: -len(kv[1]))
+    if cands:
+        top_len = len(cands[0][1])
+        same = [c for c in cands if len(c[1]) == top_len]
+        if len({c[0] for c in same}) > 1:
+            return AMBIGUOUS, "、".join(sorted({c[1] for c in same})[:3])
+        return cands[0]
     # 数字兜底：句子里有量词就不认，免得把「80000 步」当 QQ 号
     if not _NUM_UNIT.search(text or ""):
         m = re.search(r"(\d{5,12})", body)
@@ -132,6 +143,8 @@ async def do_ban(bot, gid: str, sender_id: str, nick_map: dict, at_ids: list,
     if not target:
         return "禁谁啊，说个名字"
     qq, nick = target
+    if qq == AMBIGUOUS:
+        return f"群里叫「{nick}」的不止一个，@ 一个再说话"
     if qq in (self_id, owner_qq):
         return "这个不行，换个人"
     # 借机器人的号去处置别的管理/群主，矛盾会直接烧到机器人身上
@@ -164,6 +177,8 @@ async def do_unban(bot, gid: str, sender_id: str, nick_map: dict, at_ids: list,
     if not target:
         return "解谁啊，说个名字"
     qq, nick = target
+    if qq == AMBIGUOUS:
+        return f"群里叫「{nick}」的不止一个，@ 一个再说话"
     if qq in (self_id, owner_qq):
         return "这个不行，换个人"
     try:
@@ -187,6 +202,8 @@ async def do_kick(bot, gid: str, sender_id: str, nick_map: dict, at_ids: list,
     if not target:
         return "踢谁，说清楚"
     qq, nick = target
+    if qq == AMBIGUOUS:
+        return f"群里叫「{nick}」的不止一个，@ 一个再说话"
     if qq in (self_id, owner_qq):
         return "这个不行，换个人"
     if qq != sender_id and await _is_group_admin(bot, gid, qq):

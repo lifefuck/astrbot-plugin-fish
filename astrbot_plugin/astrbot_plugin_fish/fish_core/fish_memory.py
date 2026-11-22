@@ -196,7 +196,8 @@ def topic_overlap(item: Dict, query: str) -> bool:
     return len(shared) >= 2
 
 
-def is_quotable(item: Dict, query: str = "", mode: str = "active") -> bool:
+def is_quotable(item: Dict, query: str = "", mode: str = "active",
+                min_conf: float = 0.5) -> bool:
     """这条记忆能不能出现在 prompt 里 —— 全项目只有这一处规则。
 
     active（鱼主动提起）：必须本人亲口/转述、置信度够、且有原文锚点。
@@ -208,7 +209,9 @@ def is_quotable(item: Dict, query: str = "", mode: str = "active") -> bool:
     except (TypeError, ValueError):
         conf = 0.5
     if mode == "active":
-        return (src in ("said", "reported") and conf >= 0.5
+        # 阈值走配置 memory_min_confidence：以前这里写死 0.5，配置项在 schema 和 DEFAULTS
+        # 里躺着却没有任何读取点，改它等于没改（面板上调了也不会生效）
+        return (src in ("said", "reported") and conf >= float(min_conf or 0.0)
                 and bool(str(item.get("anchor_text") or "").strip()))
     if src in ("said", "reported"):
         return True
@@ -1118,7 +1121,7 @@ fish_memory_engine = FishMemoryEngine()
 
 
 def shape_recalled(recalled, *, nick: str, text: str, fmt_when, limit: int = 2,
-                   mode: str = "active") -> list[str]:
+                   mode: str = "active", min_conf: float = 0.5) -> list[str]:
     """把召回结果整成 prompt 里的记忆行。
 
     记忆去重只在这一处：召回、拼装两边各写一份，规则迟早分叉
@@ -1131,8 +1134,12 @@ def shape_recalled(recalled, *, nick: str, text: str, fmt_when, limit: int = 2,
         if not content or content in text or text in content:
             continue
         # 记忆是按「一条 QQ 消息」存的，人常一句话拆成七八条发；
-        # 碎片原样塞进 prompt 会拼成一坨读不通的长句
-        if len(content) < 10 or content[-1] in "，、,（(":
+        # 碎片原样塞进 prompt 会拼成一坨读不通的长句。
+        # 但不能只按长度砍：「我到了」「明天见」「吃了吗」都是完整信息，
+        # 砍掉等于把有效事实永久丢掉。真正的碎片是又短又没收句的（「我跟你，」）
+        # 3 字以下（「哈哈」「嗯嗯」）才是真碎片；「我到了」「明天见」这类
+        # 短句本身就是完整信息，按长度一刀切等于永久丢掉有效事实
+        if len(content) < 3 or (len(content) < 12 and content[-1] in "，、,（("):
             continue
         if len(content) > 60:
             cut = max(content.rfind("，", 0, 60), content.rfind("；", 0, 60),
@@ -1140,15 +1147,25 @@ def shape_recalled(recalled, *, nick: str, text: str, fmt_when, limit: int = 2,
             content = content[:cut + 1] if cut >= 20 else content[:60] + "…"
         # 同一段话被拆成好几条发时，库里会同时存「前缀碎片」和「长句」，
         # 两条都塞进去就是叠字：留长的，短的让位
-        dup = [m for m in lines if content in m or m in content]
+        # 只认「同一条话的前缀/后缀」，不认纯子串：原来的 content in m 会让
+        # 「今天」被「我今天去了杭州」判成重复而整条丢掉，短事实就这样静默消失
+        def _same_line(a: str, b: str) -> bool:
+            if a == b:
+                return True
+            short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+            if len(long_) < len(short) * 2:
+                return False          # 长度差太小，是两句话而不是碎片与全句
+            return long_.startswith(short) or long_.endswith(short)
+
+        dup = [m for m in lines if _same_line(content, m)]
         if dup:
             for i, m in enumerate(lines):
-                if m in content and len(m) < len(content):
+                if len(m) < len(content) and _same_line(m, content):
                     lines[i] = content
             continue
         # 出处第二次把关：召回层已经滤过一遍，这里再滤一次是因为
         # 召回结果会被别的调用方拼装（面板、检索命令），单一规则必须都过一遍
-        if not is_quotable(item, text, mode):
+        if not is_quotable(item, text, mode, min_conf=min_conf):
             continue
         _who = nick or "他"
         _when = fmt_when(item.get("created_at") or item.get("ts"))

@@ -410,6 +410,9 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         if peer_bots.is_peer_bot(uid, nick, self._peer_set(),
                                  self.cfg.get("peer_bots_name_hints") or ()):
             logger.info("[fish] 群 %s 忽略机器人消息：%s(%s) %s", gid, nick, uid, text[:20])
+            # 只 return 不 stop 的话，对方机器人 @ 鱼时框架会拿默认人格再答一遍，
+            # 群里就冒出一条不是它说的回复，紧接着两边对吵刷屏。这里明确掐掉。
+            event.stop_event()
             return
 
         st = self._state(gid)
@@ -663,6 +666,7 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             st.recent_bot.append(line)
             st.last_bot_reply_ts = now
             st.reply_times.append(now)
+            event.stop_event()
             yield event.plain_result(line)
             return
 
@@ -979,6 +983,12 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         # 若不占位，每条都以为自己「还没说过话」，一波刷屏会被连着接好几次。
         # 真发出去才确认，失败要 _release_claim 回滚（带上 token，只回滚自己这次）
         _claim_tok = self._claim(st, time.time())
+        # 把 token 挂到事件上：handler 中途抛异常时，最外层包装器只能拿到 event，
+        # 没有它就不知道这个冷却位是不是本轮的，回滚会把别人的占位一起抹掉
+        try:
+            event.set_extra("fish_claim_tok", _claim_tok)
+        except Exception:
+            pass
 
         # 链接的卡片和下载在进「接不接话」判定之前就丢出去了（见 on_group 开头的
         # 媒体链接分支），这里只记一下，免得下面又解析一遍卡片、又下一次视频

@@ -16,7 +16,8 @@ set -euo pipefail
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_DIR="$PLUGIN_DIR/data"
 OUT="${FISH_BACKUP_DIR:-$HOME/backups/astrbot-plugin-fish}"
-STAMP="$(date +%Y%m%d-%H%M)"
+# 带秒：一分钟内连备份两次（改完配置再改代码）不会互相覆盖
+STAMP="$(date +%Y%m%d-%H%M%S)"
 TARGET="$OUT/fish-data-$STAMP.tar.gz"
 TMP="$TARGET.part"
 # 插件配置在框架的 config 目录里，不在插件目录下
@@ -64,7 +65,13 @@ mv -f "$TMP" "$TARGET"
 chmod 600 "$TARGET" 2>/dev/null || true
 
 # 只留最近 7 份
-ls -1t "$OUT"/fish-data-*.tar.gz 2>/dev/null | tail -n +8 | xargs -r rm -f
+# 只轮转自动命名的包（fish-data-YYYYmmdd-HHMM[SS].tar.gz），按名字排=按时间排。
+# 原来用 ls -1t 按 mtime：手工留的整目录应急包只要被 touch 过就会被算进 7 份里，
+# 排到后面就被删了——应急底稿不该由轮转策略决定生死
+datas=$(ls -1 "$OUT"/fish-data-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9].tar.gz \
+          "$OUT"/fish-data-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].tar.gz 2>/dev/null || true)
+[ -n "$datas" ] && printf '%s\n' "$datas" | sort -r | tail -n +8 | xargs -r rm -f
+unset datas
 echo "$(date '+%F %T') 备份完成：$TARGET ($(du -h "$TARGET" | cut -f1))"
 
 # 表情包：只在 manifest 变动时打一份。79MB 天天打等于每天白占 79MB，
@@ -81,8 +88,15 @@ if [ -f "$PACK_DIR/manifest.json" ]; then
     chmod 600 "$PACK_TARGET" 2>/dev/null || true
     echo "$NOW_MARK" > "$PACK_MARK"
     # 表情包留 3 份就够：它不随时间变，多留没意义
-    ls -1t "$OUT"/fish-memes-*.tar.gz 2>/dev/null | tail -n +4 | xargs -r rm -f
+    mems=$(ls -1 "$OUT"/fish-memes-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9].tar.gz \
+        "$OUT"/fish-memes-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].tar.gz 2>/dev/null || true)
+[ -n "$mems" ] && printf '%s\n' "$mems" | sort -r | tail -n +4 | xargs -r rm -f
+unset mems
     echo "$(date '+%F %T') 表情包已备份：$PACK_TARGET ($(du -h "$PACK_TARGET" | cut -f1))"
   fi
 fi
+# 正常收尾也要清快照：解除 trap 之前先自己删，
+# 否则每次备份都在临时目录留一份含聊天原文的 db 副本，越攒越多
+rm -rf "$SNAP"
+rm -f "$TMP"
 trap - EXIT

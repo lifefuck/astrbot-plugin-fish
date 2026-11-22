@@ -64,10 +64,13 @@ class PromptMixin:
                     if recalled:
                         logger.info("[fish] 记忆改用被动召回：%d 条", len(recalled))
                 # 过滤碎片、近重去重、带出处，全在 fish_memory.shape_recalled 一处
+                # 主动引用的置信度门槛走配置（0 是合法值，不能用 or 兜底）
+                _min_conf = self.cfg.get("memory_min_confidence")
+                _min_conf = 0.5 if _min_conf is None else float(_min_conf)
                 memory_lines = fish_memory.shape_recalled(
                     recalled, nick=nick, text=text,
                     fmt_when=self._fmt_mem_when, limit=2,
-                    mode="active" if _req else "passive")
+                    mode="active" if _req else "passive", min_conf=_min_conf)
                 # 留一份给下一轮的纠正检测：他说「你记错了」时要能对上是哪条
                 # 按 (群, 人) 存：纠正检测只认「说话人自己看到的召回」，
                 # 否则群里 B 的一句否定会改到 A 的档案上

@@ -84,10 +84,14 @@ def migrate(dry: bool) -> dict:
     conn.row_factory = sqlite3.Row
     try:
         added = ensure_cols(conn)
-        # 只动「没有锚点」的存量行：有锚点的是新逻辑写的，不该被覆盖
+        # 只动「没有锚点、且还没被标过」的存量行。
+        # 这里必须排除 source_type='said_legacy'：UPDATE 不写 anchor_mid，
+        # 只按 anchor_mid 为空来筛的话，第二次跑会把整批行的 confidence 再重置一遍，
+        # 把用户手工纠正过的分数抹掉——迁移脚本必须跑几次结果都一样。
         rows = conn.execute(
             "SELECT memory_id, content, memory_type, memory_type AS mt, confidence, source_type "
-            "FROM fish_memory_records WHERE (anchor_mid='' OR anchor_mid IS NULL)"
+            "FROM fish_memory_records WHERE (anchor_mid='' OR anchor_mid IS NULL) "
+            "AND COALESCE(source_type,'') IN ('', 'said')"
         ).fetchall()
 
         plan = []

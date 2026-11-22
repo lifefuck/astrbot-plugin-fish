@@ -129,7 +129,9 @@ async def lookup(term: str, use_network: bool = True):
     if _state["day"] != today:
         _state.update(day=today, count=0)
     if _state["count"] >= DAILY_CAP or now < _state["pause_until"]:
-        return hit.get("title") and hit or None
+        # hit 可能是 None（这个词从没查过），直接 .get 会 AttributeError，
+        # 表现是「429/超额之后查梗全崩」，其实只是没缓存
+        return (hit.get("title") and hit) if hit else None
 
     try:
         async with ClientSession(timeout=ClientTimeout(total=6)) as sess:

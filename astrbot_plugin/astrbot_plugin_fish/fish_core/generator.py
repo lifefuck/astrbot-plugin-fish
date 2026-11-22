@@ -155,6 +155,11 @@ def revalidate(draft: Draft, *, now: float, ver: int, dialogue: Iterable[Dict[st
         # 有人在叫鱼：旧草稿作废，那条新消息会自己走一轮判定，内容才是最新的
         return SUPERSEDED, why
     if kind == "chatted":
+        # 群里聊开就丢草稿，是为了防「接一句已经过时的话」。但这条草稿本身要是
+        # 回给某人的（追问窗口=2、被@/被骂=3），丢掉的后果是对人不理，比答错更难看。
+        # 优先级 ≥2 的一律照发；优先级用数字不用常量，免得生成器为了个比较去 import 决策层
+        if int(draft.priority or 0) >= 2:
+            return SEND, why + "·但这条是回给人的"
         return ABANDONED, why
     if kind == "continue":
         return SEND, "同一人接着说"

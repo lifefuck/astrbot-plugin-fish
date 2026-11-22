@@ -17,6 +17,7 @@ GitHub 剪贴板工具、截图库——结构没解析出来，降级逻辑又�
 from __future__ import annotations
 
 import aiohttp
+import asyncio
 import html
 import re
 from typing import Dict, List
@@ -172,6 +173,10 @@ async def github_repos(session, query: str, limit: int = 5) -> List[Dict[str, st
     return out
 
 
+# 三个引擎并发后的总上限。research 的工具预算是 14s，留出读正文的余量
+_TOTAL_BUDGET = 8.0
+
+
 async def search(session, query: str, limit: int = 6,
                  proxy: str | None = None) -> List[Dict[str, str]]:
     """返回 [{title,url,snippet}]，可能为空列表（空表示真没搜到）。"""
@@ -180,18 +185,32 @@ async def search(session, query: str, limit: int = 6,
         return []
     limit = max(1, min(int(limit or 6), 10))
 
-    for name, fn, use_proxy in (
+    engines = (
         ("duckduckgo", _duckduckgo, proxy or _PROXY_HINT),
         ("baidu", _baidu, proxy),
         ("duckduckgo_direct", _duckduckgo, proxy),   # 代理挂了还能直连试试
-    ):
-        try:
-            rows = _rank(query, await fn(session, query, use_proxy), limit)
-        except Exception as e:
-            logger.warning("[fish] %s 检索失败：%s", name, e)
-            continue
-        if rows:
-            logger.info("[fish] 检索「%s」→ %s %d 条", query, name, len(rows))
-            return rows
+    )
+    # 串行跑最坏是 3×6s=18s，已经超过研究循环 14s 的工具预算——等于每次必然超时、
+    # 每次都是空结果。改成并发：三个一起打，按原来的优先级顺序挑第一个有结果的，
+    # 总时长压到单个引擎的水平；超预算的一律掐掉，不让它拖住整轮研究。
+    tasks = [asyncio.create_task(fn(session, query, px)) for _n, fn, px in engines]
+    try:
+        done, _ = await asyncio.wait(tasks, timeout=_TOTAL_BUDGET)
+        for (name, _fn, _px), task in zip(engines, tasks):
+            if task not in done or task.cancelled():
+                continue
+            try:
+                raw = task.result()
+            except Exception as e:
+                logger.warning("[fish] %s 检索失败：%s", name, e)
+                continue
+            rows = _rank(query, raw, limit)
+            if rows:
+                logger.info("[fish] 检索「%s」→ %s %d 条", query, name, len(rows))
+                return rows
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
     logger.warning("[fish] 检索「%s」无可用结果", query)
     return []

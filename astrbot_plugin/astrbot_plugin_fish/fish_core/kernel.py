@@ -783,11 +783,19 @@ def _handler_guard(fn):
             logger.error("[fish] handler %s 异常，本条放弃：%s: %s",
                          fn.__name__, type(sys.exc_info()[1]).__name__, sys.exc_info()[1])
             logger.exception("[fish] handler %s 异常，本条放弃", fn.__name__)
-            # 异常发生时冷却位往往已经被 claim 走了，不还回去这群要白静默一个周期
+            # 异常发生时冷却位往往已经被 claim 走了，不还回去这群要白静默一个周期。
+            # 但只能还本轮自己的那一份：同群两条消息并发时，先挂的那条无脑回滚会把
+            # 后一条的占位一起抹掉，密度闸就白设了。token 由 handler 在 _claim 后挂到
+            # event 上；取不到说明这条消息压根没占位，不必回滚。
             try:
                 gid = event.get_group_id()
-                if gid:
-                    self._release_claim(self._state(str(gid)))
+                tok = None
+                try:
+                    tok = event.get_extra("fish_claim_tok")
+                except Exception:
+                    tok = None
+                if gid and tok is not None:
+                    self._release_claim(self._state(str(gid)), tok)
             except Exception:
                 pass
             try:

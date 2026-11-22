@@ -88,5 +88,14 @@ jobs:
       - name: P2 回归（谐音边界/冷场/时钟回拨/拆条字数/权限/炸弹边界）
         run: python scripts/test_p2_fixes.py
 
+      - name: 戳一戳兜底（双回/静默不戳）
+        run: python scripts/test_poke_fallback.py
+
+      - name: 提示词预算（记忆块字数/条数上限）
+        run: python scripts/test_prompt_budget.py
+
+      - name: P3 回归（冷却位回滚/草稿重判/机器人消息/记忆去重/检索并发）
+        run: python scripts/test_p3_fixes.py
+
       - name: 自检（纯函数，不联网）
         run: python astrbot_plugin/astrbot_plugin_fish/scripts/selfcheck.py
