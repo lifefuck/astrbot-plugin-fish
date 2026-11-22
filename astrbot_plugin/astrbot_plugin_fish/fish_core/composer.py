@@ -13,14 +13,27 @@ import random
 import re
 import time
 
-# kernel 用 importlib 按文件路径加载这些模块（sys.modules 里叫
-# astrbot_plugin_fish_prompts），所以这里不能再写相对导入：
-# 包内导入能用，按路径加载时就炸。统一走 sys.modules 取，取不到再退回相对导入
+# 这个模块有三种加载方式：包内导入、kernel 按文件路径加载、脚本 sys.path 直接
+# import（scripts/selfcheck.py 就是）。相对导入只在第一种下成立，所以这里
+# 一律走 sys.modules + 按路径兜底，三种方式都能拿到 prompts
+import importlib.util as _ilu
+import os as _os
 import sys as _sys
 
-_prompts = _sys.modules.get("astrbot_plugin_fish_prompts")
-if _prompts is None:  # 以包的方式导入时走这条
-    from . import prompts as _prompts
+
+def _load_prompts():
+    mod = _sys.modules.get("astrbot_plugin_fish_prompts")
+    if mod is not None:
+        return mod
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "prompts.py")
+    spec = _ilu.spec_from_file_location("astrbot_plugin_fish_prompts", path)
+    mod = _ilu.module_from_spec(spec)
+    _sys.modules["astrbot_plugin_fish_prompts"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_prompts = _load_prompts()
 
 _STYLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "style_fewshot.json")
 _style_cache = {"mtime": 0.0, "data": []}
