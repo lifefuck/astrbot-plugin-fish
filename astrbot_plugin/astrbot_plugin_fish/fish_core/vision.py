@@ -192,10 +192,16 @@ async def _url_is_public(url: str) -> tuple[bool, str]:
         return (_is_public_ip(host), "公网 IP" if _is_public_ip(host) else "IP 落在私有/环回/链路本地段")
     except ValueError:
         pass
-    try:
-        infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
-    except Exception as e:
-        return False, f"DNS 解析失败 {type(e).__name__}"
+    # QQ 图床（multimedia.nt.qq.com.cn）偶发解析失败，一次失败就当攻击拦掉会让
+    # 整张图丢掉，还对不上原因。这里重试三次再判负，措辞也改成网络故障而非安全问题
+    for _attempt in range(3):
+        try:
+            infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
+            break
+        except Exception as e:  # noqa: BLE001
+            if _attempt >= 2:
+                return False, f"DNS 解析失败（重试 3 次）{type(e).__name__}"
+            await asyncio.sleep(0.4 * (_attempt + 1))
     if not infos:
         return False, "DNS 无结果"
     for info in infos:

@@ -722,6 +722,9 @@ class GroupState:
     reply_times: deque = field(default_factory=lambda: deque(maxlen=20))
     # 干 @ 不说话：上一次本地应声的时间，别连着回「？」「咋了」
     last_bare_at_ts: float = 0.0
+    # 干 @ 去重按人算：上面那个是全局的，别人刚被应过，我 @ 一下就被判
+    # 「45 秒内已应过」不理我——群里感知就是「@ 了两次没反应」
+    bare_at_by: dict = field(default_factory=dict)
     # 上一次因为戳一戳说话的时间：群里人多，六个人轮着戳就是六条回复
     last_poke_reply_ts: float = 0.0
 

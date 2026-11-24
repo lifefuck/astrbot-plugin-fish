@@ -501,7 +501,8 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             # 这里后台识图，识别完把描述写回时间线，代价是一条消息一次视觉调用
             if has_image and self.cfg.get("vision_enabled", True):
                 asyncio.create_task(
-                    self._backfill_image_desc(gid, event, _msg_entry, _dlg_entry))
+                    self._backfill_image_desc(gid, event, _msg_entry, _dlg_entry,
+                                              ctx_line=f"{nick}：{_shown}"))
             if now - getattr(self, "_ctx_saved_at", 0.0) > 20:
                 self._ctx_saved_at = now
                 self._save_recent_context()
@@ -581,7 +582,7 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
                 # 现在先判：说不说归 decide()，说什么降级成本地应声（为一句「？」烧模型不值，
                 # 模型还会顺着空白编出客服腔）。
                 from .fish_core import speak_decision as _sd
-                _replied = (now - float(st.last_bare_at_ts or 0)) <= 45
+                _replied = (now - float((getattr(st, "bare_at_by", None) or {}).get(str(uid), 0.0) or 0.0)) <= 45
                 _bare_sig = self._sd_signals(
                     gid, st, now, is_at=True, empty=True, uid=str(uid), nick=nick,
                     text="<裸@>", replied_recently=_replied,
@@ -595,6 +596,7 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
                     event.stop_event()
                     return
                 st.last_bare_at_ts = now
+                st.bare_at_by[str(uid)] = now
                 yield event.plain_result(random.choice(["？", "咋了", "在呢", "你说"]))
                 event.stop_event()
                 return

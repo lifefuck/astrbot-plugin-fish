@@ -434,7 +434,7 @@ class MediaMixin:
             logger.debug("[fish] 识图失败：%s", e)
             return ""
 
-    async def _backfill_image_desc(self, gid: str, event, msg_entry: dict, dlg_entry: dict) -> None:
+    async def _backfill_image_desc(self, gid: str, event, msg_entry: dict, dlg_entry: dict, ctx_line: str = "") -> None:
         """识图完把描述写回时间线那两条记录，后续消息就能看见图里是什么。"""
         try:
             desc = (await self._image_desc(gid, event) or "").strip()
@@ -443,6 +443,19 @@ class MediaMixin:
             shown = f"[图片：{desc[:80]}]"
             msg_entry["text"] = shown
             dlg_entry["text"] = shown
+            # 时间线改了还不够：真正喂给模型的是 st.ctx 里那条「谁：[图片]」，
+            # 不回填的话上下文永远是占位符——实测刚描述完蜜蜂，下一句就回
+            # 「这一堆图我一张都摸不着」。回填只动最后那条，缓存前缀不受影响。
+            if ctx_line and "[图片]" in ctx_line:
+                try:
+                    st = self._state(gid)
+                    new_line = ctx_line.replace("[图片]", shown, 1)
+                    for item in reversed(st.ctx[-6:]):
+                        if str(item.get("content") or "") == ctx_line:
+                            item["content"] = new_line
+                            break
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("[fish] 图片回填 ctx 失败：%s", e)
             logger.info("[fish] 群 %s 图片回填时间线：%s", gid, desc[:60])
         except Exception as e:  # noqa: BLE001
             logger.debug("[fish] 图片回填失败：%s", e)
