@@ -95,6 +95,10 @@ class Signals:
     # 旁观态的准入门槛（按人冷却、小时配额、复读、质量分 vs 意愿门槛）由
     # interject 那一套算完后塞进来：它只提供「结论+理由」，最终说不说仍由本对象定
     ambient_gate_blocked: str = ""
+    # 主动插话闸（质量分 × 时机 × 按人冷却 × 小时配额）已经放行。
+    # 两道闸问的是同一个问题「这句是不是说给我」，插话闸放过了就不在收件人闸
+    # 再按「没人叫我」一刀切——实测 77 条决策里 44 条死在这里，成了只会答话的应答机
+    interject_ok: bool = False
     # 裸 @（只有 @、没文字）在 45 秒内已经应过一声：同一句「在呢」连发两遍很蠢
     replied_recently: bool = False
 
@@ -199,7 +203,10 @@ def decide(sig: Signals, cfg: Optional[Dict[str, Any]] = None) -> SpeakDecision:
     # 这道闸主要拦「话题相邻就想插嘴」和「@ 了别人还凑上去」。
     # 灰区（gray ≤ 分 < hard）默认不是，由判官定：过线才放。以前额外要求必须在
     # 追问窗口内，结果「话题相邻（S_NEAR）」这档分数再高也永远进不来。
-    if cfg.get("addressee_guard_enabled", True) and prio < PRIO_CALLED and not abused_ok:
+    # 插话闸已放行（sig.interject_ok）时整道跳过：它已经按质量分/时机/按人冷却/
+    # 小时配额判过一遍「这句值不值得接」，这里再问「有人叫你吗」等于只许当应答机。
+    if (cfg.get("addressee_guard_enabled", True) and prio < PRIO_CALLED
+            and not abused_ok and not sig.interject_ok):
         hard = _cfg_num(cfg, "addressee_hard_threshold", 70, notes)
         gray = _cfg_num(cfg, "addressee_gray_threshold", 40, notes)
         sc = int(sig.addressee_score)

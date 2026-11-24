@@ -839,6 +839,7 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         # 旁观态打分器只做「质量分 + 按人冷却 + 小时配额 + 复读」这几个信号，
         # 结论塞进 decide() 由它统一裁决（不再由它自己决定说不说）
         _gate = ""
+        _q_ok = False
         _ambient = not (is_at or forced or is_follow)
         if _ambient:
             _q_ok, _q_why = self._should_interject(gid, st, text, now, has_image, has_media, uid)
@@ -924,6 +925,8 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             judge_score=(getattr(self, "_last_quality", None) if _ambient else None),
             judge_threshold=0.0,
             ambient_gate_blocked=_gate,
+            # 插话闸已放行 = 这句值得接；收件人闸不再拿「没人叫我」二次否决
+            interject_ok=bool(_ambient and _q_ok),
             # 指向：@ 到的人和引用目标都如实带过去。引用我自己的话等于在跟我说话，
             # 这时候哪怕同时 @ 了别人，也不该判成「说的是别人」
             addressee_score=int(_rcpt_score), addressee_reason=str(_rcpt_reason),
