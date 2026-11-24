@@ -779,7 +779,13 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             _owner_hit = bool(_owner) and str(uid) == _owner
             # 25 秒内它刚说过话，就当这条是在对它说：群里骂人一大半不带 @，
             # 少这条判断，「你他妈傻逼」这种明摆着冲它来的会被当空气
-            _to_me = ((now - getattr(self, "_last_bot_ts", {}).get(gid, 0.0)) < 25
+            # 但 @ 了别人 / 引用的是别人时必须排除：实测主人跟群友讨论技术，
+            # 一句带「你」的话被当成骂鱼，回嘴「先把自己那点脑子装回来」，
+            # 场面直接炸掉
+            _to_other = (bool(set(str(t) for t in at_targets) - {self_id})
+                         or bool(reply_to_uid and str(reply_to_uid) != self_id))
+            _to_me = ((not _to_other)
+                      and (now - getattr(self, "_last_bot_ts", {}).get(gid, 0.0)) < 25
                       and (is_at or self._addressed_to_me(text)
                            or bool(re.search(r"你(?:他妈|妈|丫|个|们|这|那|是|说|在)", text))))
             # 注意：这里要的是「这句在骂主人」，不是「这句话是主人说的」。
@@ -789,6 +795,11 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
                 u in text for u in (f"@{_owner}", str(_owner)))
             _lvl = quarrel.classify(text, at_me=is_at, mentions_owner=_owner_cursed,
                                     consecutive=len(_same) >= 2, reply_to_me=_to_me)
+            # 主人骂它不按路人对骂处理：他对的是自家的鱼，喷回去只会更难看。
+            # 降到一档（嘟囔一句就过），语气交给后面那档提示词
+            if _owner_hit and _lvl >= 2:
+                logger.info("[fish] 群 %s 主人骂到头上，不还嘴（%d 档降到 1 档）", gid, _lvl)
+                _lvl = 1
             _hot = self._anger_unlimited(gid)
             if _lvl >= 3 and not _hot:
                 # 同一个人五分钟两次封顶，超过自动降成二档：不然对方阴阳十句它喷十句
