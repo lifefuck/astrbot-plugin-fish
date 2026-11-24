@@ -742,6 +742,9 @@ class GroupState:
     # 布尔位会被后来的消息顶掉，A 失败回落 last_bot_reply_ts=0 就把 B 的占位一起清了
     claim_token: int = 0
     claim_owner: int = 0
+    # 占位的时间戳：发送失败时框架不会回调插件，「发出去才算数」的第二段永远不会来，
+    # 冷却位就一直挂着。留个时间戳好让入口处按超时作废（见 _expire_stale_claim）
+    claim_ts: float = 0.0
 
 def _poke_aimed_at_me(seg, self_id: str, gid: str) -> bool:
     """这个 Poke 段是不是戳我。

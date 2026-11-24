@@ -420,6 +420,9 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         # 就知道「等这几秒里群里有没有新动静」，不用去 diff 整个对话流
         st.msg_ver = int(getattr(st, "msg_ver", 0) or 0) + 1
         now = time.time()
+        # 上一条要是发出去时超时了（retcode=1200），框架不会回调 on_decorate，
+        # 冷却位就一直悬着；新消息进来先按超时结掉，别让整群白静默
+        self._expire_stale_claim(st, now)
         has_image, has_media = self._has_media(event)
         is_at = self._is_at_bot(event)
         # 指向信号：@ 了谁、引用的是谁、引用的是不是我。

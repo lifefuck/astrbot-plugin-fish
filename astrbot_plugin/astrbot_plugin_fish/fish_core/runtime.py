@@ -164,8 +164,28 @@ class RuntimeMixin:
         st.claim_prev = st.last_bot_reply_ts
         st.claiming = True
         st.claim_owner = st.claim_token
+        st.claim_ts = now
         st.last_bot_reply_ts = now
         return st.claim_owner
+
+    @staticmethod
+    def _expire_stale_claim(st: "GroupState", now: float, ttl: float = 90.0) -> None:
+        """占位挂太久自动作废。
+
+        占位的第二段确认是 on_decorate（真发出去才落账）。发送阶段抛
+        `ActionFailed retcode=1200 sendMsg 超时` 时框架不会回调插件，冷却位就
+        一直悬着，整群白静默到冷却结束。超过 ttl 没确认的占位一律当没发过。
+        """
+        ts = float(getattr(st, "claim_ts", 0.0) or 0.0)
+        if not getattr(st, "claiming", False) or not ts:
+            return
+        if now - ts <= ttl:
+            return
+        st.last_bot_reply_ts = st.claim_prev
+        st.claiming = False
+        st.claim_owner = 0
+        st.claim_ts = 0.0
+        logger.info("[fish] 占位 %.0f 秒没落账（大概率发送失败），冷却位已还回", now - ts)
 
     @staticmethod
     def _release_claim(st: "GroupState", token=_UNSET) -> None:
