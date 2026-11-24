@@ -156,8 +156,12 @@ class PokeMixin:
                 logger.warning("[fish] 回戳失败：%s %s", type(e).__name__, e)
         # 模型是异步出的：request_llm 交出去之后这边就收不到「失败了」的回调，
         # 超时没动静就由上面那只看门狗补一句兜底短句
+        # 纯手欠的戳不带历史上下文：带着 44 条上文进去，模型会顺着旧话题说人话，
+        # 实测出现过被戳一下回「饮水机上倒冰红茶」（那是三小时前的图）这种答非所问。
+        # 有未回留言（pending）才需要上下文，因为要接住那一句。
+        _ctx = self._ctx_of(st, "") if pending_text else []
         yield event.request_llm(prompt=user_prompt, system_prompt=system_prompt,
-                                contexts=self._ctx_of(st, ""), tool_set=NO_TOOLS)
+                                contexts=_ctx, tool_set=NO_TOOLS)
 
     def _spawn_poke_watch(self, event, gid: str, uid: str, nick: str, st, now: float) -> None:
         """戳一戳走模型时的兜底看门狗。
