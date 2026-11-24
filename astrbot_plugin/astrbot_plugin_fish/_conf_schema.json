@@ -1,4 +1,4 @@
-{
+﻿{
   "enabled": {
     "description": "总开关",
     "type": "bool",
@@ -113,22 +113,22 @@
   },
   "context_window_sec": {
     "type": "int",
-    "default": 1800,
+    "default": 7200,
     "description": "主模型上下文时间窗（秒）：这段时间内的发言都进 prompt，别再按固定条数截断话题"
   },
   "context_turns_max": {
     "type": "int",
     "description": "上文最多保留条数",
     "hint": "超过就一次砍掉四分之一。砍得越频繁命中率越低，48 条约二三十轮一次。",
-    "default": 48
+    "default": 96
   },
   "timeline_size": {
     "description": "上下文条数上限（配合 context_window_sec 时间窗，先按时间筛再截条数）",
     "type": "int",
-    "default": 40,
+    "default": 60,
     "slider": {
       "min": 0,
-      "max": 40,
+      "max": 80,
       "step": 1
     }
   },

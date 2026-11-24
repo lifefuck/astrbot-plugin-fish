@@ -631,8 +631,11 @@ class RespondMixin:
             parts = typeset.finish_parts(parts, max_parts=max_parts) or [final]
         except Exception as e:
             logger.debug("[fish] 排版收口失败：%s", e)
-        chain = [Plain(parts[0])]
-        tail = parts[1:]
+        # 空文本不出站：之前 parts[0] 为空也照样拼一条 Plain("")，群里显示的就是
+        # 一个空气泡（17:57:38 那条），用户以为鱼哑了。图还能发，纯空链直接不发
+        head = (parts[0] or "").strip()
+        tail = [p for p in parts[1:] if (p or "").strip()]
+        chain = [Plain(head)] if head else []
 
         # 5.0 发图：有 [看图:标签] 就先取图。取到了就压掉表情包和画图——
         # 一句回复里塞两张图太花，而且这张是点名要的，优先级最高
@@ -691,6 +694,16 @@ class RespondMixin:
                                           "pixiv": pixiv_b64})
             logger.info("[fish] 长回复拆成 %d 条（%s 字）：%s", len(parts), len(final),
                         " / ".join(p[:18] for p in parts))
+
+        # 整条链空着（没文字也没图）就别发了：空链发出去是一个空气泡，
+        # 群里看到的是「鱼哑了」，实际是模型这轮没产出可用内容
+        if not chain and not tail:
+            logger.warning("[fish] 群 %s 回复链是空的（模型没产出可用文本），这条不发", gid)
+            self.log_event("skip", gid, meta.get("text", ""), who=meta.get("nick", ""), why="空回复")
+            event.set_result(MessageEventResult(chain=[]))
+            event.stop_event()
+            self._release_claim(st, _tok)
+            return
 
         event.set_result(MessageEventResult(chain=chain))
 

@@ -847,7 +847,17 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
                 is_follow=bool(is_follow), is_wake=bool(forced),
                 dialogue=st.dialogue, sender_alias=sender_alias, cfg=self.cfg)
             _rcpt_score, _rcpt_reason = _rcpt.score, _rcpt.reason
-            logger.info("[fish][rcpt] 群 %s %s", gid, _rcpt.line())
+            # 主人开口基本就是在跟鱼说话，但实测一天 13 条里 9 条被「无信号」吞掉。
+            # 把他抬进灰区（40~70）交给判官定，不直接放行——他要是 @ 了别人就照样不理
+            _own_qq = str(self.cfg.get("owner_qq") or "").strip()
+            if (_own_qq and str(uid) == _own_qq and _rcpt_score < 55
+                    and "@别人" not in _rcpt_reason and "引用别人" not in _rcpt_reason):
+                _rcpt_score = 55
+                _rcpt_reason = (_rcpt_reason + "·主人抬灰区") if _rcpt_reason else "主人"
+            if _rcpt_score != _rcpt.score:
+                logger.info("[fish][rcpt] 群 %s %s → 抬到 %d（%s）", gid, _rcpt.line(), _rcpt_score, _rcpt_reason)
+            else:
+                logger.info("[fish][rcpt] 群 %s %s", gid, _rcpt.line())
         except Exception as e:
             logger.warning("[fish] 收件人判定表异常（不影响回话）：%s: %s", type(e).__name__, e)
 
