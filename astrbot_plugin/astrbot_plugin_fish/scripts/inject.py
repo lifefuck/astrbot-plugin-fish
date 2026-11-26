@@ -134,7 +134,13 @@ class Injector:
     async def run(self, steps, settle=6.0):
         async with websockets.connect(
             WS_URL,
-            additional_headers={"X-Self-ID": str(SELF_ID), "X-Client-Role": "universal"},
+            additional_headers={
+                "X-Self-ID": str(SELF_ID),
+                "X-Client-Role": "universal",
+                # AstrBot 的 aiocqhttp 反向 WS 要 Bearer token，跟 NapCat 一样的头；
+                # 不带就是 HTTP 401，看起来像「端口没开」
+                **({"Authorization": "Bearer " + os.environ["QQ_TOKEN"]} if os.environ.get("QQ_TOKEN") else {}),
+            },
             max_size=None,
         ) as ws:
             self.ws = ws
@@ -145,13 +151,13 @@ class Injector:
                 if step.get("event") is not None:
                     await ws.send(json.dumps(step["event"], ensure_ascii=False))
                 await asyncio.sleep(step.get("wait", settle))
-                got = [p for (ts, p) in self.actions if ts >= mark]
+                got = [(ts, p) for (ts, p) in self.actions if ts >= mark]
                 reports.append((step, got))
                 print(f"\n=== {step['title']} ===")
                 print(f"  -> 注入：{step.get('desc', '')}")
                 if not got:
                     print("  <- 动作：无（插件未触发回复）")
-                for p in got:
+                for p_ts, p in got:
                     act = p.get("action")
                     params = p.get("params", {})
                     msg = params.get("message")
@@ -160,7 +166,8 @@ class Injector:
                             (m.get("data", {}).get("text") or f"[{m.get('type')}]")
                             for m in msg
                         )
-                    print(f"  <- 动作：{act} group={params.get('group_id')} msg={str(msg)[:200]!r}")
+                    # 带上「注入 → 收到动作」的秒数，延迟就得靠这行量
+                    print(f"  <- 动作 +{p_ts - mark:.2f}s：{act} group={params.get('group_id')} msg={str(msg)[:200]!r}")
             task.cancel()
         return reports
 

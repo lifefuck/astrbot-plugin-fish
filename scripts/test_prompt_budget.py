@@ -22,7 +22,10 @@ def check(name, cond, detail=""):
 
 
 # 1 人设长度与内容
-check("人设 <500 字", len(prompts.SYSTEM_PROMPT) < 500, f"实际 {len(prompts.SYSTEM_PROMPT)}")
+# 人设放长是批准的（对照梗鲸母本重写），这里只守住「结构还在、不是被截断」
+check("人设已展开 >2000 字", len(prompts.SYSTEM_PROMPT) > 2000, f"实际 {len(prompts.SYSTEM_PROMPT)}")
+check("人设含 20 组正反例", prompts.SYSTEM_PROMPT.count("反例：") == 20, f"实际 {prompts.SYSTEM_PROMPT.count('反例：')}")
+check("人设保留输出约定", all(k in prompts.SYSTEM_PROMPT for k in ("[PASS]", "[搜索:", "[看图:", "[MEME:")))
 check("荤话段已砍", "荤话" not in prompts.SYSTEM_PROMPT and "骚话" not in prompts.SYSTEM_PROMPT)
 
 # 2 记忆预算：给 4 条只留 2 条

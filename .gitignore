@@ -22,3 +22,11 @@ astrbot_plugin/astrbot_plugin_fish/fish_core/data/
 
 # 插件根目录下的运行时数据（cmd_config.json/temp/t2i 模板），不进版本库
 astrbot_plugin/astrbot_plugin_fish/data/
+
+# 离线质检工具：third_party 里的 lieflat_detect 是 CC BY-NC 4.0，
+# 放进仓库会让整个仓库带上「禁止商用」的限制，本地留着用就行
+scripts/third_party/
+scripts/qa_ai_tone.py
+
+# astrbot 插件开发临时产物
+.astrbot-plugin/
