@@ -217,7 +217,8 @@ ok("A35 三个 6s 引擎并发后按总预算收口", _rows == [] and _dt < 1.5,
 _MAIN = (PKG / "main.py").read_text(encoding="utf-8")
 _RESP = (PKG / "fish_core" / "respond.py").read_text(encoding="utf-8")
 _CMD = (PKG / "fish_core" / "commands.py").read_text(encoding="utf-8")
-ok("A05 私聊不进记忆写入分支", 'acct.get("gid_real") != "private"' in _RESP)
+ok("A05 私聊不进记忆写入分支",
+   'not str(_gid_real).startswith("private")' in _RESP)
 ok("A18 私聊 /off 有回应", "静默只能在群里发" in _CMD)
 # A57 的脚本在 NapCat 那台机器上，CI 里拿不到：用 FISH_NAPCAT_LOOP 指过去才检查。
 # 只验「非回环地址排在 127.0.0.1 之前」这个顺序，不写死具体内网 IP

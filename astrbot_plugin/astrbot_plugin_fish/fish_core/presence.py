@@ -154,12 +154,14 @@ def quota_ok(gid: str, dialogue: Optional[List[dict]] = None,
     # 以前 reversed 遇到第一条非 me 就 break，于是「我先说话 → 群友回一句 →
     # 我补图」这条最常走的路径完全放行（实测 21:49:05 说话、44s 补图没被拦）
     if dialogue:
-        for d in reversed(dialogue[-3:]):
-            if not d.get("me"):
-                continue
-            if now - float(d.get("ts") or 0) < 45.0:
+        # 要拦的是「我说完没人接，自己又补一张」；如果我说完之后有人接话了，
+        # 那现在这波是在接别人的梗，属于正常参与，不能拦（测试 12 就是这种）
+        tail = dialogue[-6:]
+        last_me = max((i for i, d in enumerate(tail) if d.get("me")), default=None)
+        if last_me is not None:
+            nobody_after = not any(not d.get("me") for d in tail[last_me + 1:])
+            if nobody_after and now - float(tail[last_me].get("ts") or 0) < 45.0:
                 return False, "刚说过话，别再补表情"
-            break
     return True, ""
 
 

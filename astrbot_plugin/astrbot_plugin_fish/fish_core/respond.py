@@ -890,7 +890,9 @@ class RespondMixin:
                 # 只判 != "private" 会让 None 走进来再 acct["gid_real"] 抛 KeyError，
                 # 记忆整段丢掉——线上两次 'gid_real' 报错就是这么来的
                 _gid_real = acct.get("gid_real") or acct.get("gid")
-                if _gid_real and _gid_real != "private":
+                # 私聊的键是 private:uid，写死的 != "private" 挡不住这种形式，
+                # 记忆会把一对一私聊的内容记进群里能召回的库
+                if _gid_real and not str(_gid_real).startswith("private"):
                     # 两次写入分开兜：以前一个抛异常另一条也不写了，而且只有 WARNING，
                     # 一周两条「记忆写入失败」等于悄悄丢了对话上下文
                     try:
