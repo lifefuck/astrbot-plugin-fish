@@ -15,6 +15,7 @@ import math
 import os
 import re
 import shutil
+import contextlib
 import sqlite3
 import time
 from typing import Dict, List, Optional, Tuple
@@ -363,6 +364,28 @@ class FishMemoryEngine:
             pass
         return conn
 
+    @contextlib.contextmanager
+    def _conn(self):
+        """`with sqlite3.connect(...)` 只提交事务，不关连接——每调一次就漏一个 fd，
+        24 小时下来几百个句柄挂在库文件上。这里显式关闭，并给出 commit 重试：
+        备份进程/别的脚本持锁时，一次 commit 撞上 locked 就等于这条记忆直接丢了。"""
+        conn = self._get_conn()
+        try:
+            yield conn
+            for _try in range(3):
+                try:
+                    conn.commit()
+                    break
+                except sqlite3.OperationalError as e:
+                    if "lock" not in str(e).lower() and "busy" not in str(e).lower():
+                        raise
+                    if _try == 2:
+                        logger.warning("[fish] 记忆库提交三次都被锁住，这次写入放弃：%s", e)
+                        raise
+                    time.sleep(0.15 * (_try + 1))
+        finally:
+            conn.close()
+
     def _init_db(self):
         """建库/建表；库文件坏了就地隔离并回滚，绝不让整个插件加载失败。
 
@@ -372,7 +395,7 @@ class FishMemoryEngine:
         所以「有备份」救不了这种情况。
         """
         try:
-            with self._get_conn() as conn:
+            with self._conn() as conn:
                 conn.executescript(DDL)
                 # 旧库补列：CREATE TABLE IF NOT EXISTS 不会给已存在的表加列，
                 # 存量库（线上就是）必须逐列 ALTER，重复执行报 duplicate column 属于正常
@@ -432,7 +455,7 @@ class FishMemoryEngine:
         try:
             if os.path.exists(self.db_path):
                 os.remove(self.db_path)
-            with self._get_conn() as conn:
+            with self._conn() as conn:
                 conn.executescript(DDL)
                 conn.commit()
             logger.error("[fish] 没有可用备份，已重建空记忆库：%s", self.db_path)
@@ -564,7 +587,7 @@ class FishMemoryEngine:
         topic = (topic or topics_of(content)).strip()
         anchor_text = (anchor_text or content)[:80]
 
-        with self._get_conn() as conn:
+        with self._conn() as conn:
             # 1. 精确指纹排重
             fp = self.fingerprint(group_id, person_id, content, memory_type)
             # 注意别加 is_deleted=0：软删行仍然占着 memory_id 主键，
@@ -685,7 +708,7 @@ class FishMemoryEngine:
         # 数量型提问的答案往往不带实体词（「4只」），单独扫一遍数字+量词
         wants_number = bool(re.search(r"(几|多少)\s*(只|个|次|条|张|天|岁|块|分|位|门|套)", query or ""))
 
-        with self._get_conn() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 "SELECT memory_id, title, content, memory_type, importance, created_at, "
                 "last_activated_at, activation_count, addressee_nick, topic, anchor_mid, "
@@ -778,7 +801,7 @@ class FishMemoryEngine:
         # 「没人再印证」一路降到软删（重启几次就把记忆清空的那种事故）
         if top:
             try:
-                with self._get_conn() as conn:
+                with self._conn() as conn:
                     conn.executemany(
                         "UPDATE fish_memory_records SET last_activated_at=?, "
                         "activation_count=activation_count+1 WHERE memory_id=?",
@@ -804,7 +827,7 @@ class FishMemoryEngine:
 
         now_ts = time.time()
         if log:
-            with self._get_conn() as conn:
+            with self._conn() as conn:
                 conn.execute(
                     "INSERT INTO fish_turn_logs (group_id, person_id, ts, user_text, reply_text, closed) "
                     "VALUES (?, ?, ?, ?, ?, 0)",
@@ -840,7 +863,7 @@ class FishMemoryEngine:
             return False
         clean = re.sub(r"\s{2,}", " ", VISION_NOISE.sub(" ", (user_text or "")).strip())
         now_ts = time.time()
-        with self._get_conn() as conn:
+        with self._conn() as conn:
             row = conn.execute(
                 "SELECT id FROM fish_turn_logs WHERE group_id=? AND person_id=? AND user_text=? "
                 "AND ts >= ? ORDER BY ts DESC LIMIT 1",
@@ -864,7 +887,7 @@ class FishMemoryEngine:
                   output_tokens: int, ms: int, ts: Optional[float] = None) -> None:
         """记一轮真实用量。落库的是网关原值，不做任何估算补全。"""
         try:
-            with self._get_conn() as conn:
+            with self._conn() as conn:
                 conn.execute(
                     "INSERT INTO fish_token_logs (ts, kind, input, hit, output, ms)"
                     " VALUES (?, ?, ?, ?, ?, ?)",
@@ -896,7 +919,7 @@ class FishMemoryEngine:
                 sql += " AND kind = ?"
                 args.append(kind)
             try:
-                with self._get_conn() as conn:
+                with self._conn() as conn:
                     row = conn.execute(sql, args).fetchone()
             except Exception as e:
                 logger.debug("[fish] token 统计失败：%s", e)
@@ -918,7 +941,7 @@ class FishMemoryEngine:
             }
         # 最近 10 条聊天：只算 chat，联网那条路的输入天然大一个量级，混进来就没意义
         try:
-            with self._get_conn() as conn:
+            with self._conn() as conn:
                 rows = conn.execute(
                     "SELECT input, hit, output FROM fish_token_logs"
                     " WHERE kind='chat' ORDER BY ts DESC LIMIT 10").fetchall()
@@ -927,7 +950,7 @@ class FishMemoryEngine:
         # 当前上下文大小 = 最近一次聊天调用真实喂进去的输入 token。
         # 这个数比「猜历史条数」准，它含人设、规则、记忆、ctx 全部内容
         try:
-            with self._get_conn() as conn:
+            with self._conn() as conn:
                 row = conn.execute(
                     "SELECT input, ts FROM fish_token_logs WHERE kind='chat'"
                     " ORDER BY ts DESC LIMIT 1").fetchone()
@@ -959,7 +982,7 @@ class FishMemoryEngine:
         topic = topics_of(body)
         now_ts = float(ts if ts is not None else time.time())
         since = now_ts - window_days * 86400
-        with self._get_conn() as conn:
+        with self._conn() as conn:
             row = conn.execute(
                 "SELECT id, repeat_count FROM fish_said_records "
                 "WHERE group_id=? AND to_id=? AND topic=? AND ts>=? "
@@ -988,7 +1011,7 @@ class FishMemoryEngine:
         if not str(to_id):
             return 0, ""
         since = time.time() - within_days * 86400
-        with self._get_conn() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 "SELECT topic, gist, repeat_count FROM fish_said_records "
                 "WHERE group_id=? AND to_id=? AND ts>=? ORDER BY ts DESC LIMIT 40",
@@ -1054,7 +1077,7 @@ class FishMemoryEngine:
         now_ts = time.time()
         old_id = str(old.get("id") or "")
         new_text = " ".join(str(new_text or "").split())
-        with self._get_conn() as conn:
+        with self._conn() as conn:
             if old_id:
                 conn.execute(
                     "UPDATE fish_memory_records SET confidence=0.0, is_deleted=1, "
@@ -1081,7 +1104,7 @@ class FishMemoryEngine:
         """
         now_ts = time.time()
         cut = now_ts - days * 86400
-        with self._get_conn() as conn:
+        with self._conn() as conn:
             n = conn.execute(
                 # 判据用 updated_at 而不是 last_activated_at：衰减本身会写 updated_at，
                 # 于是「同一条一天只降一次」是天然的；用 last_activated_at 判等于
@@ -1102,7 +1125,7 @@ class FishMemoryEngine:
         流水账是每句话一行，不清会一直涨（搬过来的旧库已经有 8800 多行）。
         """
         now_ts = time.time()
-        with self._get_conn() as conn:
+        with self._conn() as conn:
             n1 = conn.execute("DELETE FROM fish_turn_logs WHERE ts < ?",
                               (now_ts - log_days * 86400,)).rowcount
             n2 = conn.execute("DELETE FROM fish_memory_tags WHERE memory_id IN "
