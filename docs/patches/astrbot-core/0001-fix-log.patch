@@ -1,0 +1,91 @@
+From 3ddf765295a66fefb337ce4f2e4a27e2702b4d51 Mon Sep 17 00:00:00 2001
+From: life <lifefuck@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 18:09:03 +0800
+Subject: [PATCH 1/5] =?UTF-8?q?fix(log):=20=E6=8E=A7=E5=88=B6=E5=8F=B0?=
+ =?UTF-8?q?=E6=97=A5=E5=BF=97=E6=95=B4=E8=A1=8C=E5=86=99=E4=B8=A4=E9=81=8D?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+同一条记录被两个 sink 写进同一个流，每条日志出现两次且时间戳同为 0ms 差；
+排查时据此误判成「机器人双发」。console_sink 按「同文本 + 50ms 窗口」去重，
+log.py 在 configure_logger 后清掉多余的 console sink。
+---
+ astrbot/core/log.py                | 21 +++++++++++++++++++++
+ astrbot/core/utils/console_sink.py | 17 +++++++++++++++++
+ 2 files changed, 38 insertions(+)
+
+diff --git a/astrbot/core/log.py b/astrbot/core/log.py
+index b0ba1ca9..ac7857e9 100644
+--- a/astrbot/core/log.py
++++ b/astrbot/core/log.py
+@@ -677,6 +677,26 @@ class LogManager:
+             filter=lambda record: not record["extra"].get("is_trace", False),
+         )
+ 
++    @classmethod
++    def _drop_stray_console_sinks(cls, keep_id: int) -> None:
++        """同一个 stdout 被挂过多个 sink 时，每条日志会整行打两遍。
++
++        线上实测 event_bus、respond.stage 每行都出现两次、时间戳只差 0ms，
++        曾据此误判成「机器人双发」。只保留最新的那个 console sink。
++        """
++        try:
++            handlers = getattr(getattr(_loguru, "_core", None), "handlers", None) or {}
++        except Exception:
++            return
++        for hid, handler in list(handlers.items()):
++            if hid == keep_id:
++                continue
++            try:
++                if getattr(handler, "_sink", None) is cls._console_output:
++                    _loguru.remove(hid)
++            except Exception:
++                continue
++
+     @classmethod
+     def configure_logger(
+         cls,
+@@ -715,6 +735,7 @@ class LogManager:
+                     )
+                     _loguru.remove(cls._console_sink_id)
+                     cls._console_sink_id = new_sink_id
++                    cls._drop_stray_console_sinks(new_sink_id)
+             except Exception:
+                 pass
+ 
+diff --git a/astrbot/core/utils/console_sink.py b/astrbot/core/utils/console_sink.py
+index c02d1a9b..584cef1c 100644
+--- a/astrbot/core/utils/console_sink.py
++++ b/astrbot/core/utils/console_sink.py
+@@ -12,6 +12,14 @@ from typing import TextIO
+ class BoundedConsoleSink:
+     """Write console records on one daemon with bounded, nonblocking admission."""
+ 
++    # 同一条记录被两个 sink（或两个 writer 线程）写进同一个流时，控制台会整行出现两遍，
++    # 线上实测每条差 0ms——排查时据此误判成「机器人双发」。这里按「同文本 + 极短窗口」
++    # 去重；日志本身带毫秒时间戳，所以连击也不会误伤真正连续的两条记录。
++    _dedupe_lock = threading.Lock()
++    _last_message: str = ""
++    _last_ts: float = 0.0
++    _dedupe_window_sec = 0.05
++
+     def __init__(self, stream: TextIO, capacity: int = 512) -> None:
+         """Start a console writer without taking ownership of the stream.
+ 
+@@ -103,6 +111,15 @@ class BoundedConsoleSink:
+         with self._lock:
+             if self._closed:
+                 return
++            now = time.monotonic()
++            cls = type(self)
++            with cls._dedupe_lock:
++                if (message == cls._last_message
++                        and now - cls._last_ts < cls._dedupe_window_sec):
++                    self.deduped = getattr(self, "deduped", 0) + 1
++                    return
++                cls._last_message = message
++                cls._last_ts = now
+             try:
+                 self._queue.put_nowait(str(message))
+             except queue.Full:

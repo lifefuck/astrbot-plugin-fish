@@ -27,9 +27,9 @@
 | `follow_window_sec` | `300` | 被叫过后免 @ 追问窗口（秒） |
 | `follow_max_turns` | `2` | 追问窗口里最多连续免 @ 几次 |
 | `follow_min_gap_sec` | `8` | 追问窗口内两次回复的最小间隔（秒）,防止一句一回刷屏 |
-| `context_window_sec` | `1800` | 主模型上下文时间窗（秒）：这段时间内的发言都进 prompt，别再按固定条数截断话题 |
-| `context_turns_max` | `48` | 上文最多保留条数。超过就一次砍掉四分之一。砍得越频繁命中率越低，48 条约二三十轮一次。 |
-| `timeline_size` | `40` | 上下文条数上限（配合 context_window_sec 时间窗，先按时间筛再截条数） |
+| `context_window_sec` | `7200` | 主模型上下文时间窗（秒）：这段时间内的发言都进 prompt，别再按固定条数截断话题 |
+| `context_turns_max` | `96` | 上文最多保留条数。超过就一次砍掉四分之一。砍得越频繁命中率越低，48 条约二三十轮一次。 |
+| `timeline_size` | `60` | 上下文条数上限（配合 context_window_sec 时间窗，先按时间筛再截条数） |
 | `memory_recall_topk` | `4` | 记忆召回条数 |
 | `memory_source_required` | `true` | 记忆必须带出处才允许主动提。关掉会退回老行为：没有原文锚点的旧记忆也会被主动引用。没事别关。 |
 | `memory_min_confidence` | `0.5` | 主动引用记忆的最低置信度 |
@@ -37,7 +37,7 @@
 | `memory_conf_decay_days` | `30` | 低置信度记忆多少天没人印证就降一档 |
 | `memory_prompt_budget` | `160` | 记忆块字数上限。条数之外再卡一道字数，否则出处和动作提示会把正文挤成配角。 |
 | `prompt_budget_memory_max` | `2` | 拼进提示词的记忆条数上限。多了反而把人物的口气冲散。只留最相关的几条，超了按相关度丢。 |
-| `prompt_budget_style_max` | `3` | 拼进提示词的风格样例上限（组）。样例是给人学口气的，三组就够。硬塞十组，模型会开始抄样例的字。 |
+| `prompt_budget_style_max` | `5` | 拼进提示词的风格样例上限（组）。样例是给人学口气的，默认 5 组：三组撑不起语感，模型会退回自己的模板腔。硬塞十组，模型会开始抄样例的字。 |
 | `prompt_budget_hint_max` | `2` | 拼进提示词的提醒类块数上限。吵架/跨群/社交解读/防复读/表情包/百科这些提示加起来最多几条。超了按优先级丢，优先级：吵架>跨群>社交>防复读>表情包>百科。 |
 | `empty_context_ask_short` | `true` | 上下文太薄时先问一句短的。时间线为空、或只有一条且跟当前这句接不上时不调主模型：被@就先问一句短的让人补，没人叫就直接不开口。关掉等于一律不开口。 |
 | `vision_enabled` | `true` | 群里发图时让 Gemini 看一眼。只在决定要回的时候才识图，不会为每张图烧配额。识图失败静默降级成纯文字。 |
@@ -54,6 +54,21 @@
 | `split_enabled` | `true` | 长回复拆条。超过字数阈值就拆成 2~3 条隔 0.6~1.5 秒补发，像人连着敲。括号和表情标签不会被切断。 |
 | `split_max_chars` | `45` | 拆条字数阈值。单条超过这么多字就拆成两条。真人一条消息通常十几二十字，超过这个数就该换行了。0 或负数 = 永不拆。 |
 | `reply_max_chars` | `260` | 单条回复字数上限。超过就截断。跟 split_max_chars 不是一回事：那个是拆条，这个是防跑题。 |
+| `humanize_short_cut` | `false` | 单字硬切（好/行/行吧整条删）。默认关：fish 里「好」常是一条正经回复，开了会变成对 @ 它的人装死 |
+| `humanize_fiction` | `false` | 小说腔整句删（嘴角勾起弧度等）。群聊基本不出现，先关着 |
+| `human_comma_split` | `true` | 短句按逗号拆两条。26 字内按第一个逗号拆，0.7 概率，和长句拆条互补 |
+| `ctx_keep_turns` | `30` | 上文最多带多少轮。从 user 那条切开，不留孤儿助手话 |
+| `aiflavour_enabled` | `true` | AI 味动态拦截 |
+| `aiflavour_mode` | `strip` | AI 味拦截模式。strip=剥掉 \| shadow=只记日志 \| block=整条拦 |
+| `aiflavour_learn_min` | `3` | 词根升级阈值。同群累计命中几次才开始剥 |
+| `aiflavour_deactivate_days` | `7` | 词根自动降级天数 |
+| `aiflavour_short_window` | `180` | 会话刹车窗口（秒） |
+| `huoren_typo_enabled` | `true` | 毛边：偶尔打错一个字（一次最多一个，带自我更正） |
+| `huoren_typo_rate` | `0.06` | 错别字概率，0.06≈三十条来一条 |
+| `huoren_correction_rate` | `0.5` | 打错字后补一句「打错了，是X」的概率 |
+| `huoren_mood` | `true` | 心流：energy/warmth 按会话积累并压成一句提示词 |
+| `yunzai_other_yaml` | `~/projects/trss-yunzai/config/config/other.yaml` | 云崽 other.yaml 路径。/off /on 要同步 whiteGroup 的那个文件。留空 = 不同步，绝不回退到别人的默认路径（以前缺省会去改另一个服务的配置）。 |
+| `yunzai_sync` | `true` | /off 时同步云崽白名单。只在你确实同时跑云崽、且上面路径填对了的时候才开。 |
 
 ## 高级分组：视觉/语音进阶（`advanced_vision`）
 

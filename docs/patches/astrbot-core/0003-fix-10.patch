@@ -1,0 +1,56 @@
+From d5a5327684c28fd76fceb1eedb75c282e82a1b54 Mon Sep 17 00:00:00 2001
+From: life <lifefuck@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 00:41:50 +0800
+Subject: [PATCH 3/5] =?UTF-8?q?fix:=20=E6=8F=92=E4=BB=B6=E5=BC=82=E5=B8=B8?=
+ =?UTF-8?q?=E4=B8=8D=E5=86=8D=E6=8A=8A=E5=8E=9F=E5=A7=8B=E6=8A=A5=E9=94=99?=
+ =?UTF-8?q?=E5=8F=91=E7=BE=A4=EF=BC=9B=E7=A9=BA=E5=8F=82=E6=95=B0=E6=8C=87?=
+ =?UTF-8?q?=E4=BB=A4=E6=A0=91=E6=88=AA=E5=88=B0=2010=20=E8=A1=8C?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+star_request 原来把 {e} 原文发到群里（sqlite 报错、绝对路径全在里面）；
+现在只报插件名，细节留在日志，但「参数不足」这类用法提示仍原样回给用户。
+command_group 空参数时整棵指令树刷屏，21 条指令一条 /meme 占满整屏，截断到 10 行。
+---
+ .../core/pipeline/process_stage/method/star_request.py   | 9 ++++++++-
+ astrbot/core/star/filter/command_group.py                | 6 ++++++
+ 2 files changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/astrbot/core/pipeline/process_stage/method/star_request.py b/astrbot/core/pipeline/process_stage/method/star_request.py
+index 9cf76693..dadd99af 100644
+--- a/astrbot/core/pipeline/process_stage/method/star_request.py
++++ b/astrbot/core/pipeline/process_stage/method/star_request.py
+@@ -123,7 +123,14 @@ class StarRequestSubStage(Stage):
+                 )
+ 
+                 if not event.is_stopped() and event.is_at_or_wake_command:
+-                    ret = f":(\n\n在调用插件 {md.name} 的处理函数 {handler.handler_name} 时出现异常：{e}"
++                    # 异常原文（sqlite 报错、绝对路径、变量值）不能发到群里：
++                    # 群友看到的是天书，顺手还拿到了你的目录结构。细节走日志。
++                    # 但「参数不足」这类是框架给的用法提示，属于用户输入错，要原样回
++                    if isinstance(e, ValueError) and "参数不足" in str(e):
++                        ret = str(e)
++                    else:
++                        ret = (f":(\n\n{md.name} 处理 {handler.handler_name} 时出错了，"
++                               f"具体原因写在机器人日志里")
+                     event.set_result(MessageEventResult().message(ret))
+                     yield
+                     event.clear_result()
+diff --git a/astrbot/core/star/filter/command_group.py b/astrbot/core/star/filter/command_group.py
+index 2e064136..6aecc4a7 100755
+--- a/astrbot/core/star/filter/command_group.py
++++ b/astrbot/core/star/filter/command_group.py
+@@ -137,6 +137,12 @@ class CommandGroupFilter(HandlerFilter):
+                 + "\n"
+                 + self.print_cmd_tree(self.sub_command_filters, event=event, cfg=cfg)
+             )
++            # 指令多的组（表情包 21 条）一条 /meme 能刷满整屏，还只是「参数不足」。
++            # 截到 10 行，剩下的让他自己去 help 里看
++            _lines = tree.splitlines()
++            if len(_lines) > 11:
++                tree = "\n".join(_lines[:10]) + (
++                    f"\n…（共 {len(_lines) - 1} 条，发 {self.group_name} help 看全部）")
+             raise ValueError(
+                 f"参数不足。{self.group_name} 指令组下有如下指令，请参考：\n" + tree,
+             )

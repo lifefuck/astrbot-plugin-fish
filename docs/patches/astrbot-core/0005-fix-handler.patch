@@ -1,0 +1,45 @@
+From 5e5f25708d97f36eea185f7a151d1870961538c6 Mon Sep 17 00:00:00 2001
+From: life <lifefuck@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 00:57:08 +0800
+Subject: [PATCH 5/5] =?UTF-8?q?fix:=20=E4=BA=8B=E4=BB=B6=E5=9C=A8=E8=BF=9B?=
+ =?UTF-8?q?=E9=92=A9=E5=AD=90=E5=89=8D=E5=B7=B2=E8=A2=AB=E5=81=9C=E6=AD=A2?=
+ =?UTF-8?q?=E6=97=B6=EF=BC=8C=E4=B8=8D=E5=86=8D=E8=AE=B0=E6=88=90=E5=BD=93?=
+ =?UTF-8?q?=E5=89=8D=20handler=20=E5=B9=B2=E7=9A=84?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+fish 决定不说话会 stop_event，日志却把停止算到这个钩子里正在跑的那个插件头上
+（实测被记成 stealer），排查时直接被带偏。
+---
+ astrbot/core/pipeline/result_decorate/stage.py | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/astrbot/core/pipeline/result_decorate/stage.py b/astrbot/core/pipeline/result_decorate/stage.py
+index e5b83e7a..a6d2454e 100644
+--- a/astrbot/core/pipeline/result_decorate/stage.py
++++ b/astrbot/core/pipeline/result_decorate/stage.py
+@@ -160,6 +160,9 @@ class ResultDecorateStage(Stage):
+             plugins_name=event.plugins_name,
+         )
+         for handler in handlers:
++            # 事件可能在进这个钩子之前就被停掉了（fish 决定不说话时就是这样）。
++            # 不记下原状态的话，这里会把「不是我干的」算到当前 handler 头上
++            _stopped_before = event.is_stopped()
+             try:
+                 logger.debug(
+                     f"hook(on_decorating_result) -> {star_map[handler.handler_module_path].name} - {handler.handler_name}",
+@@ -181,6 +184,13 @@ class ResultDecorateStage(Stage):
+                 logger.error(traceback.format_exc())
+ 
+             if event.is_stopped():
++                if _stopped_before:
++                    logger.debug(
++                        f"{star_map[handler.handler_module_path].name} - "
++                        f"{handler.handler_name}: 事件在进入本钩子前就已停止，"
++                        f"停止不是它做的",
++                    )
++                    return
+                 logger.info(
+                     f"{star_map[handler.handler_module_path].name} - "
+                     f"{handler.handler_name} stopped event propagation.",

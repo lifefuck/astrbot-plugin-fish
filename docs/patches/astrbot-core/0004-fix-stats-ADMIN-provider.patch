@@ -1,0 +1,27 @@
+From 9dbe809cb0cc934c86ea06bcb868b25bd82937bf Mon Sep 17 00:00:00 2001
+From: life <lifefuck@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 00:46:08 +0800
+Subject: [PATCH 4/5] =?UTF-8?q?fix:=20/stats=20=E5=8A=A0=20ADMIN=EF=BC=8C?=
+ =?UTF-8?q?=E5=92=8C=20/provider=20=E4=B8=80=E8=87=B4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+之前任何群友都能看当前会话的 token 用量。role 修好后装饰器在 QQ 群才真正生效。
+---
+ astrbot/builtin_stars/builtin_commands/main.py | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/astrbot/builtin_stars/builtin_commands/main.py b/astrbot/builtin_stars/builtin_commands/main.py
+index 6765e78c..de084579 100644
+--- a/astrbot/builtin_stars/builtin_commands/main.py
++++ b/astrbot/builtin_stars/builtin_commands/main.py
+@@ -58,6 +58,8 @@ class Main(star.Star):
+         """Create a new conversation."""
+         await self.conversation_c.new_conv(message)
+ 
++    # 和隔壁 /provider 一样属于运维信息：谁都能看当前会话烧了多少 token
++    @filter.permission_type(filter.PermissionType.ADMIN)
+     @filter.command("stats")
+     async def stats(self, message: AstrMessageEvent) -> None:
+         """Show token usage statistics for the current conversation"""
