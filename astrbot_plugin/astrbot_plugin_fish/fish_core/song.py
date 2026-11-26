@@ -149,7 +149,13 @@ class SongService:
                 except Exception as e:
                     logger.debug("[fish] 点歌进度提示没发出去：%s", e)
             return await self._send_path(event, gid, hit)
+        # 每种写法单独 30s 超时，三种加起来最坏 90 秒：群里表现就是「点了完全没反应」，
+        # 期间这条会话一直被占着。给整个点歌动作一个 60 秒总预算
+        _deadline = time.time() + 60.0
         for q in self._variants(query):
+            if time.time() > _deadline:
+                logger.info("[fish] 点歌「%s」用完了总的超时预算，剩下的写法不再试", query)
+                break
             ok = await self._play_once(event, q, session_id, gid, on_stage)
             if ok == "nocand":
                 # 只有「一首都没搜到」才值得换个写法再搜一次；
