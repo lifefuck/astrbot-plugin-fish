@@ -108,7 +108,13 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         # 只会让最熟的人被冷处理。配置 owner_favor_lock 可以改这个数
         _lock_owner = str(self.cfg.get("owner_qq") or "").strip()
         if _lock_owner:
-            favor.set_locked(_lock_owner, float(self.cfg.get("owner_favor_lock", 100) or 100))
+            # 不能用 `x or 100`：填 0 是「不锁」，会被当成没填又锁回 100
+            _raw_lock = self.cfg.get("owner_favor_lock", 100)
+            try:
+                _lock_val = float(str(_raw_lock).strip() or 100)
+            except (TypeError, ValueError):
+                _lock_val = 100.0
+            favor.set_locked(_lock_owner, _lock_val)
             favor.save(force=True)
         # style_learner 的池子路径写死在原项目的 data/ 下，指到插件自己的目录，别污染上游
         style_learner._POOL_PATH = str(DATA_DIR / "style_fewshot.json")
@@ -1041,8 +1047,9 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         if _at_skip:
             social_hint = "【这条点名叫你】直接回答，不要输出 [PASS]。"
         elif _inline_judge:
-            social_hint = ("【这条没人叫你】先掂量一下值不值得接：插进去只是废话、或者接不住，"
-                           "就只输出 [PASS]，一个字都别多说；要接就一句话接住话头。")
+            social_hint = ("【这条没人叫你】先掂量值不值得接：接不住、插进去只是废话、或者别人已经答完了，"
+                           "就直接输出 [PASS]，一个字都别多说。这轮不说话不算失礼，群里没人会怪你；"
+                           "硬接一句不痛不痒的才像机器人。要接就一句话踩在他们刚说的那件事上。")
         verdict, vision_desc, voice_text = await asyncio.gather(
             _noop() if _inline_judge else self._social_read(gid, st, text, nick, is_at or forced, is_follow),
             self._image_desc(gid, event) if imgs else _noop(),
@@ -1331,7 +1338,7 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
                 prompts.SYSTEM_PROMPT,
                 bot_nick=str(self.cfg.get("bot_nickname") or "小鲸鱼"),
                 bot_qq=self_id, group_id="private", is_private=True,
-            )
+            ) + humanize.STYLE_REMINDER + "\n\n" + humanize.GUARD
             _userp = poke_context.build_prompt(
                 _pi, f"戳你的是「{nick}」", repeat=1, last_said=list(st.recent_bot)[-2:])
             logger.info("[fish] 私聊被戳 <- %s，走模型", nick)

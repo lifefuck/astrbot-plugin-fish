@@ -140,15 +140,16 @@ def quota_ok(gid: str, dialogue: Optional[List[dict]] = None,
         return False, "在场配额满（10 分钟 %d 次）" % limit
     if row["ts"] and now - max(float(t) for t in row["ts"]) < gap:
         return False, "在场间隔不足 %.0fs" % gap
-    # 不许紧跟在自己上一句后面：那已经是在说话了，再补个表情就是连发
+    # 不许紧跟在自己上一句后面：那已经是在说话了，再补个表情就是连发。
+    # 以前 reversed 遇到第一条非 me 就 break，于是「我先说话 → 群友回一句 →
+    # 我补图」这条最常走的路径完全放行（实测 21:49:05 说话、44s 补图没被拦）
     if dialogue:
         for d in reversed(dialogue[-3:]):
-            if d.get("me"):
-                if now - float(d.get("ts") or 0) < 45.0:
-                    return False, "刚说过话，别再补表情"
-                break
             if not d.get("me"):
-                break       # 中间隔了人说话，就无所谓
+                continue
+            if now - float(d.get("ts") or 0) < 45.0:
+                return False, "刚说过话，别再补表情"
+            break
     return True, ""
 
 

@@ -45,6 +45,8 @@ def decide(
         # 群友刚发图就跟着发，观感上就是「我在跟他斗图」，实际只是碰巧想配图
         return False, "群友刚发了图，再甩图就成了斗图"
     tags = recent_tags or []
+    # 同一标签只在一小时内算重复。以前没有时间窗，模型连着吐「卖萌」就永久不发图
     if tag and tags and tags[-1] == tag:
-        return False, f"上一次也是「{tag}」，同一话题不重复"
+        if not last_meme_ts or now - last_meme_ts < 3600:
+            return False, f"上一次也是「{tag}」，同一话题不重复"
     return OK

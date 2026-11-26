@@ -81,6 +81,21 @@ class RespondMixin:
                 b64 = meme_catalog.pick_scene_b64(scene, "")
         except Exception as e:
             logger.debug("[fish] 在场挑图失败：%s", e)
+        # 在场图也必须过斗图闸：以前这条完全绕过——不调 gate、不写 last_meme_ts、
+        # 不记账，等于一条不受任何频率限制的发图通道，48h 纯图占 45% 有它一份
+        if b64:
+            try:
+                _st = self._state(gid)
+                _ok, _why = self._meme_gate(gid, _st, "[在场:%s]" % scene, time.time())
+            except Exception as e:
+                _ok, _why = True, ""
+                logger.debug("[fish] 在场斗图闸异常，放行：%s", e)
+            if not _ok:
+                logger.info("[fish] 在场图被斗图闸拦下（%s），改发短词", _why)
+                b64 = None
+            else:
+                _st.last_meme_ts = time.time()
+                _st.recent_meme_tags.append("[在场:%s]" % scene)
         try:
             if b64:
                 presence.mark(gid, "[在场:%s]" % scene)
@@ -187,6 +202,12 @@ class RespondMixin:
             # 现在过一遍人味化，再按 fish 的阈值（45 字/最多 2 条）取第一条——
             # 异常路径上宁少说一句，也别把没洗干净的原文甩出去
             cut = humanize.strip_periods(humanize.clean_text(cut)).strip()
+            # 兜底这条路没有后面的剥离步骤：内部指针（[画图:…]/[搜索:…]/[pixiv:…]）
+            # 会原样进群。实测 sanitize_reply 对画图标签是直接放行的
+            cut = meme_gen.extract_tag(cut)[0]
+            cut = _SEARCH_LEFTOVER_RE.sub("", cut)
+            cut = _PIXIV_LEFTOVER_RE.sub("", cut)
+            cut = _TAG_ONLY_RE.sub("", cut).strip()
             if cut:
                 segs = humanize.split_segments(cut, max_seg=2, max_chars=45)
                 cut = (segs[0] if segs else cut).strip()
@@ -278,8 +299,13 @@ class RespondMixin:
             return
         text = "".join(c.text for c in result.chain if isinstance(c, Plain))
         if not text.strip():
-            logger.info("[fish] 群 %s 这轮只有非文本内容，释放冷却位", gid)
-            self._release_claim(st, _tok)
+            # 纯图也是一句说完的话：发出去之后再释放冷却位，等于同一条消息
+            # 能立刻再开一次口（日志还谎报「只有非文本内容」）。只有真的空链才释放
+            if any(isinstance(c, Image) for c in result.chain):
+                logger.info("[fish] 群 %s 本轮是纯图，按已开口处理，不释放冷却位", gid)
+            else:
+                logger.info("[fish] 群 %s 这轮只有非文本内容，释放冷却位", gid)
+                self._release_claim(st, _tok)
             return
 
         # 沉默出口：模型整条只吐了 <silent> / [NO_REPLY]，就是「这轮不接」。
