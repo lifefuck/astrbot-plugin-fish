@@ -684,6 +684,9 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         # @ 了别人就不算「接着跟我说」：追问窗口是按「我刚说过话」开的，
         # 不是按「他冲我说」开的，中间他一转头跟别人聊，窗口就该让路
         _talk_to_other = self._at_others(event)
+        # 证据来源要分开记：以前 90 秒推断出来的也写「@别人」，日志里 23 条
+        # 「说的是别人」有 13 条原文根本没有 @，排查时等于被自己的日志带偏
+        _other_src = "at" if _talk_to_other else ""
         if _talk_to_other:
             # 记一笔：这人这会儿在跟别人说话。紧跟着的那句没 @，也还是冲对方说的
             # （实测：@我是神人「感觉哈基米没有GPT有人味」→ 下一句「感觉Muse是最
@@ -691,9 +694,14 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             st.other_dir[uid] = now
         elif not is_at:
             _other_ts = st.other_dir.get(uid, 0.0)
-            # 90 秒内且这中间我没插过话 = 还在跟对方聊，不该轮到我
-            if _other_ts and now - _other_ts < 90 and st.last_bot_reply_ts < _other_ts:
+            # 90 秒内且这中间我没插过话 = 还在跟对方聊，不该轮到我。
+            # 但这只是推断，遇到明显冲着我来的句子（叫名字/问「你」）就该让路，
+            # 否则「他上一条 @ 了别人」会把后面所有话都连坐掉
+            if (_other_ts and now - _other_ts < 90
+                    and st.last_bot_reply_ts < _other_ts
+                    and not self._addressed_to_me(text)):
                 _talk_to_other = True
+                _other_src = "follow"
 
         # 结算上一次「主动插话有没有人搭理」：有人 @ 它、叫它名字，就是接上了；
         # 90 秒过完还是没人理，计一次冷场，连着两次就撤退一段时间
@@ -940,7 +948,8 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             at_targets=tuple(at_targets),
             reply_to_uid=str(reply_to_uid or ""),
             target_uid=("someone_else" if (_talk_to_other and not is_quote_bot) else ""),
-            address_evidence=("@别人" if _talk_to_other else ""),
+            address_evidence=("" if not _talk_to_other
+                              else ("@别人" if _other_src == "at" else "刚才在跟别人说话")),
             muted=bool((is_at or forced) and not self.cfg.get("reply_when_at", True)),
             banned=bool(getattr(st, "banned", False)),
         )
@@ -1331,9 +1340,11 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
                             nick, now - st.last_bot_reply_ts)
                 event.stop_event()
                 return
-            st.last_bot_reply_ts = now
-            # 私聊的戳同样走模型：本地短句只有 5 句，戳几次就开始复读
+            # 私聊的戳同样走模型：本地短句只有 5 句，戳几次就开始复读。
+            # 注意顺序：decide 要靠「上次说话距今多久」挑语气，先写 last_bot_reply_ts
+            # 等于提前宣布刚说完话，prompt 里永远是「你上一次说话是 0 分钟前」
             _pi = poke_context.decide(st.msgs, uid, st.last_bot_reply_ts, now)
+            st.last_bot_reply_ts = now
             _sysp = composer.build_system_prompt(
                 prompts.SYSTEM_PROMPT,
                 bot_nick=str(self.cfg.get("bot_nickname") or "小鲸鱼"),
