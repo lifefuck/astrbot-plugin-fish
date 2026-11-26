@@ -48,6 +48,13 @@ _STALL_WINDOW_SEC = 600.0     # 卡话题看 10 分钟
 _STALL_MIN_ASKS = 2           # 同一话题至少被问两次才算「卡住」
 _STALL_HOT_SEC = 120.0        # 最后一次问出来 2 分钟内才算热着
 _STALL_QUIET_SEC = 60.0       # 鱼在这段时间内没说过话，才轮到它救场
+
+# 热聊插话档：两人一来一回时 addressee 会把收件人分扣到 0，卡话题那档又只认问句，
+# 结果群里越热闹它越插不上。这一档不看问句，只看热度和自己沉默了多久。
+_WARM_WINDOW_SEC = 180.0      # 只看最近 3 分钟
+_WARM_MIN_MSGS = 6            # 3 分钟内至少 6 条人话才算热聊
+_WARM_MIN_SPEAKERS = 2        # 至少两个人在说，一个人自言自语不掺和
+_WARM_QUIET_SEC = 240.0       # 自己至少 4 分钟没开口才补这一句
 # 收件人分门槛分两档：「求助」要 40（灰区下限），「卡话题」放到 30。
 # 卡话题的信号本来就弱（一群人干瞪眼没人答），再用 40 卡等于永远触发不了——
 # 实测「这个配置项你们怎么填的？」这种泛称撞不到代词判定，只有 0~30 分
@@ -191,6 +198,32 @@ def stalled(rows: list, now: float) -> Tuple[bool, str]:
     return True, "%d 次问句没人接" % len(asks)
 
 
+def warm_chat(rows: list, now: float, cfg: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
+    """群里正聊得热、鱼却半天没出声：给它一次插话机会。
+
+    上面每一档主动触发都要过收件人分，而群里两个人一来一回时 addressee 会按
+    「A↔B在聊」把分扣到 0，判定层说得再对也轮不到它。实测一场 13 分钟的对话
+    它一个字没说，判定层十几次都判「接（0.64 > 0.62）」，全死在调度层。
+    这一档只看两件事：群够不够热、鱼沉默够不够久。发言率和主动冷却照旧管它。
+    """
+    if (cfg or {}).get("warm_chat_enabled", True) is False:
+        return False, "热聊插话关着"
+    win = _num(cfg, "warm_window_sec", _WARM_WINDOW_SEC)
+    need = int(_num(cfg, "warm_min_msgs", float(_WARM_MIN_MSGS)))
+    quiet = _num(cfg, "warm_quiet_sec", _WARM_QUIET_SEC)
+    recent = [e for e in rows if not _entry_is_bot(e) and now - _entry_ts(e) <= win]
+    if len(recent) < need:
+        return False, "热聊条数 %d <%d" % (len(recent), need)
+    speakers = {str(e.get("uid") or e.get("who") or "") for e in recent}
+    speakers.discard("")
+    if len(speakers) < _WARM_MIN_SPEAKERS:
+        return False, "只有一个人在说"
+    last_bot = max([_entry_ts(e) for e in rows if _entry_is_bot(e)] or [0.0])
+    if last_bot and now - last_bot < quiet:
+        return False, "鱼 %.0fs 前说过" % (now - last_bot)
+    return True, "%d 条热聊·鱼沉默 %.0fs" % (len(recent), (now - last_bot) if last_bot else 0.0)
+
+
 def help_asked(text: str) -> bool:
     """这句是不是在求操作/求解答。"""
     return bool(_HELP_RE.search(text or ""))
@@ -258,15 +291,23 @@ def schedule(sig: Any, cfg: Optional[Dict[str, Any]] = None, *, decision: Any = 
     # 求助只在「还没人回答」时才算数：别人已经答了再补一句就是抢话
     want_help = (not _to_other and help_asked(getattr(sig, "text", "") or "")
                  and not answered_recently(rows, now))
+    # 热聊档：判定链已经说「这条能接」，只是被收件人分/问句条件挡住
+    warm_ok, warm_why = ((False, "在跟别人说话") if _to_other
+                         else warm_chat(rows, now, cfg))
     if ok and add >= _ADD_MIN_STALL:
         trigger, why = "stall", stall_why
     elif want_help and add >= _ADD_MIN_HELP:
         trigger, why = "help", "明确求助"
+    elif warm_ok and not denied:
+        # denied 的那条一律不救：判定链认为不是在跟鱼说话，多半有它的道理
+        trigger, why = "warm", warm_why
     if not trigger:
         if ok:
             why = "%s；收件人 %d < %d" % (stall_why, add, _ADD_MIN_STALL)
         elif help_asked(getattr(sig, "text", "") or ""):
             why = "求助但收件人 %d < %d" % (add, _ADD_MIN_HELP)
+        elif warm_ok:
+            why = warm_why
         else:
             why = stall_why
         # 什么都不值得说的时候还有最后一档：在场。群里在笑、在摆烂、在抛梗，

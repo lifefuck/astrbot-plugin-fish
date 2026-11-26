@@ -337,6 +337,12 @@ DEFAULTS = {
     "rate_window_sec": 600,            # 发言率统计窗口
     "rate_window_msgs": 50,            # 窗口条数上限，先到者为准
     "proactive_gap_sec": 90,           # 主动发言之后至少隔多久才允许下一次
+    # 热聊插话档：两人一来一回时收件人分会被「A↔B在聊」扣到 0，卡话题那档又只认问句，
+    # 于是群里越热闹它越插不上（实测 13 分钟零发言）。这一档不看问句，只看热度和自己沉默了多久。
+    "warm_chat_enabled": True,
+    "warm_window_sec": 180,            # 只看最近几分钟的热度
+    "warm_min_msgs": 6,                # 窗口内至少几条人话算热聊
+    "warm_quiet_sec": 240,             # 自己沉默满这么久才补一句
     # —— 打字延迟 ——
     "typing_delay_enabled": True,
     "typing_max_sec": 3.0,             # 延迟封顶，长段也不要让人等太久
