@@ -209,6 +209,10 @@ prompts = _load("prompts", "prompts.py")
 
 composer = _load("composer", "composer.py")
 
+# 人味化后处理：拆条/去 AI 腔/删八股句/静默标签。规则搬自大肥鱼 humanizer
+# 与 MaiBot cleaner，见模块头注释
+humanize = _load("humanize", "humanize.py")
+
 quarrel = _load("quarrel", "quarrel.py")
 
 insult_actions = _load("insult_actions", "insult_actions.py")
@@ -406,6 +410,26 @@ DEFAULTS = {
     "follow_window_sec": 300,
     "follow_max_turns": 2,
     "reply_max_chars": 260,
+    # A 组（salttove 词表 / dsh 四件套）落地的开关。默认值都按「不误杀」挑的：
+    # humanize_short_cut 关（「好」「行」在 fish 里是正经回复，全删等于装死）、
+    # humanize_fiction 关（小说腔本来就不出现在群聊里，先不参与）、
+    # aiflavour 开在 strip 档（只剥不整条拦，刹车要连拦两次才触发）
+    "humanize_short_cut": False,
+    "humanize_fiction": False,
+    "aiflavour_enabled": True,
+    "aiflavour_mode": "strip",
+    "aiflavour_learn_min": 3,
+    "aiflavour_deactivate_days": 7,
+    "aiflavour_short_window": 180,
+    "human_comma_split": True,
+    "ctx_keep_turns": 30,
+    # 毛边：错别字（一次最多一个 + 自我更正）。
+    # 0.06 是「三十条里来一条」，再高就不像手滑像文盲了
+    "huoren_typo_enabled": True,
+    "huoren_typo_rate": 0.06,
+    "huoren_correction_rate": 0.5,
+    # 心流：energy/warmth 按会话落盘，压成一句提示词
+    "huoren_mood": True,
     # --- 文字游戏 / 斗图 / 联网扩展 ---
     "enable_games": True,          # 数字炸弹、掷骰子、抽签、点名
     "meme_battle_enabled": True,   # @ 带图时斗图反杀
@@ -471,7 +495,11 @@ _BUILTIN_COMMANDS = frozenset({
 
 _SONG_INTENT_RE = re.compile(
     r"(?:我想听|我要听|想听|要听|听一下|听个|听首|听一首|来一首|来首|来一个|"
-    r"放一首|放首|放个|点一首|点首|点歌|唱一首|唱首|给我放|给我来|能不能放|能放)"
+    r"放一首|放首|放个|点一首|点首|点歌|唱一首|唱首|给我放|给我来"
+    # 「能放」以前是裸片段，群里一句「我才能放心的把活交给它」被切成歌名
+    # 「心的把活交给它」真的下载并发了一条 30 秒语音。要求前面不是「才/怎/可」、
+    # 后面紧跟量词或书名号才算点歌意图
+    r"|(?<![才怎可])(?:能不能放|能放)(?=[首个一《「\"']))"
     r"\s*[《「\"']?\s*([^《》「」\"'，,。！!？?\n]{1,24})"
 )
 
@@ -843,4 +871,4 @@ def flatten_conf(raw: dict) -> dict:
     return flat
 
 
-__all__ = ["ToolSet", "cfg_int", "_guess_lan_ip", "_URL_RE", "_ASK_OPINION_RE", "_REALTIME_RE", "_NO_SEARCH_RE", "_EXPLICIT_SEARCH_RE", "_VAGUE_Q", "_usage_of", "_search_query", "PLUGIN_DIR", "FISH_CORE", "DATA_DIR", "_warm_png_b64", "_WARM_PNG", "_load", "affect", "favor", "poke_context", "anti_template", "interject_planner", "style_learner", "meme_catalog", "group_memes", "typeset", "addressee", "scheduler", "generator", "tease", "presence", "meme_gate", "prompts", "composer", "quarrel", "insult_actions", "interject_score", "fish_memory", "splitter", "token_report", "token_card", "vision", "hearing", "pixiv", "_media_parser_pixiv_cookie", "meme_gen", "order_watch", "social_read", "peer_bots", "cross_memory", "panel_api", "admin_actions", "yunzai_link", "backup", "games", "fun_features", "connectors", "safety_guard", "cross_interaction", "memory_atoms", "meme_manager", "DEFAULTS", "MEME_PATH", "_noop", "_write_json", "_POKE_BACK_TS", "_pick_poke", "_BUILTIN_COMMANDS", "_SONG_INTENT_RE", "_SONG_STOP_WORDS", "_SEARCH_MARK_RE", "_SEARCH_LEFTOVER_RE", "_PIXIV_MARK_RE", "_PIXIV_LEFTOVER_RE", "_ImgRef", "_TAG_ONLY_RE", "_SONG_META_HEAD", "_SONG_META_CONTAINS", "_parse_song_request", "_MEME_ASK_RE", "_meme_ask_term", "_REPORT_RE", "_extract_report", "_TATTLE_RE", "_is_tattle_request", "_is_builtin_cmd", "_poke_back", "_ASK_FAVOR_RE", "_TECH_TOKEN_RE", "GroupState", "_poke_aimed_at_me", "_UNSET", "_handler_guard", "flatten_conf", "NO_TOOLS"]
+__all__ = ["ToolSet", "cfg_int", "_guess_lan_ip", "_URL_RE", "_ASK_OPINION_RE", "_REALTIME_RE", "_NO_SEARCH_RE", "_EXPLICIT_SEARCH_RE", "_VAGUE_Q", "_usage_of", "_search_query", "PLUGIN_DIR", "FISH_CORE", "DATA_DIR", "_warm_png_b64", "_WARM_PNG", "_load", "affect", "favor", "poke_context", "anti_template", "interject_planner", "style_learner", "meme_catalog", "group_memes", "typeset", "addressee", "scheduler", "generator", "tease", "presence", "meme_gate", "prompts", "composer", "humanize", "quarrel", "insult_actions", "interject_score", "fish_memory", "splitter", "token_report", "token_card", "vision", "hearing", "pixiv", "_media_parser_pixiv_cookie", "meme_gen", "order_watch", "social_read", "peer_bots", "cross_memory", "panel_api", "admin_actions", "yunzai_link", "backup", "games", "fun_features", "connectors", "safety_guard", "cross_interaction", "memory_atoms", "meme_manager", "DEFAULTS", "MEME_PATH", "_noop", "_write_json", "_POKE_BACK_TS", "_pick_poke", "_BUILTIN_COMMANDS", "_SONG_INTENT_RE", "_SONG_STOP_WORDS", "_SEARCH_MARK_RE", "_SEARCH_LEFTOVER_RE", "_PIXIV_MARK_RE", "_PIXIV_LEFTOVER_RE", "_ImgRef", "_TAG_ONLY_RE", "_SONG_META_HEAD", "_SONG_META_CONTAINS", "_parse_song_request", "_MEME_ASK_RE", "_meme_ask_term", "_REPORT_RE", "_extract_report", "_TATTLE_RE", "_is_tattle_request", "_is_builtin_cmd", "_poke_back", "_ASK_FAVOR_RE", "_TECH_TOKEN_RE", "GroupState", "_poke_aimed_at_me", "_UNSET", "_handler_guard", "flatten_conf", "NO_TOOLS"]
