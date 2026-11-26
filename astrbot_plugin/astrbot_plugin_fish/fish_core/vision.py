@@ -574,6 +574,12 @@ async def _describe_wb(images: list[bytes], cfg: dict, logger=None,
         return ""
 
     key = str(cfg.get("vision_wb_key") or "")
+    if not key.strip():
+        # 没配 key 还照跑，等于每个模型白撞一次 401，把 20 秒总预算耗在必然失败上，
+        # 后面的 Gemini 通道反而没时间了
+        if logger:
+            logger.info("[fish] 没配 vision_wb_key，跳过 WB 直连链路")
+        return ""
     # 预算按「整条降级链共用一个 deadline」算：以前每个阶段各自起一个 started，
     # 最坏 20(WB)+20(Gemini)+框架通道，一张图能把回复拖到半分钟
     budget = (deadline - time.time()) if deadline else float(cfg.get("vision_total_budget_sec", 20) or 20)
