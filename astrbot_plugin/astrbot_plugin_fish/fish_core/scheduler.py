@@ -198,6 +198,24 @@ def stalled(rows: list, now: float) -> Tuple[bool, str]:
     return True, "%d 次问句没人接" % len(asks)
 
 
+def _bot_spoke_ts(rows: list) -> float:
+    """鱼最后一次「真的说了话」的时间。
+
+    纯表情不算说话：它甩一张图交差，却会重置沉默计时，等于一张图把接下来
+    4 分钟的插话机会一起堵死——实测 23:11-23:17 那场热聊，warm 档一次没触发，
+    就因为中间鱼跟了两张纯图。
+    """
+    ts = 0.0
+    for e in rows:
+        if not _entry_is_bot(e):
+            continue
+        t = str(e.get("text") or "").strip()
+        if not t or t in ("[图片]", "[表情]", "[动图]", "[语音]"):
+            continue
+        ts = max(ts, _entry_ts(e))
+    return ts
+
+
 def warm_chat(rows: list, now: float, cfg: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
     """群里正聊得热、鱼却半天没出声：给它一次插话机会。
 
@@ -214,14 +232,24 @@ def warm_chat(rows: list, now: float, cfg: Optional[Dict[str, Any]] = None) -> T
     recent = [e for e in rows if not _entry_is_bot(e) and now - _entry_ts(e) <= win]
     if len(recent) < need:
         return False, "热聊条数 %d <%d" % (len(recent), need)
+    # 当前这条是图就别接：对着表情插话，模型十有八九再甩一张图，然后沉默 4 分钟
+    cur = str((rows[-1] if rows else {}).get("text") or "").strip()
+    if cur in ("", "[图片]", "[表情]", "[动图]", "[语音]"):
+        return False, "最新一条是图，不对着图说话"
     speakers = {str(e.get("uid") or e.get("who") or "") for e in recent}
     speakers.discard("")
     if len(speakers) < _WARM_MIN_SPEAKERS:
         return False, "只有一个人在说"
-    last_bot = max([_entry_ts(e) for e in rows if _entry_is_bot(e)] or [0.0])
+    # 光有热度不够，还得有话可接：群里连刷几张图时插进去，模型只会再甩一张图
+    said_aloud = [e for e in recent
+                  if now - _entry_ts(e) <= 60
+                  and str(e.get("text") or "").strip() not in ("", "[图片]", "[表情]", "[动图]", "[语音]")]
+    if not said_aloud:
+        return False, "最近 1 分钟只有图，没话可接"
+    last_bot = _bot_spoke_ts(rows)
     if last_bot and now - last_bot < quiet:
-        return False, "鱼 %.0fs 前说过" % (now - last_bot)
-    return True, "%d 条热聊·鱼沉默 %.0fs" % (len(recent), (now - last_bot) if last_bot else 0.0)
+        return False, "鱼 %.0fs 前说过话" % (now - last_bot)
+    return True, "%d 条热聊·鱼沉默 %s" % (len(recent), "很久" if not last_bot else "%.0fs" % (now - last_bot))
 
 
 def help_asked(text: str) -> bool:
@@ -334,7 +362,8 @@ def schedule(sig: Any, cfg: Optional[Dict[str, Any]] = None, *, decision: Any = 
                       stats={"trail": trail})
     allowed, rate_why, stats = rate_guard(rows, cfg)
     gap = _num(cfg, "proactive_gap_sec", 90.0)
-    last_bot = max([_entry_ts(e) for e in rows if _entry_is_bot(e)] or [0.0])
+    # 纯表情不算「刚说过」：它甩一张图就沉默 90 秒，等于一张图吃掉一次正经接话机会
+    last_bot = _bot_spoke_ts(rows)
     if last_bot and now - last_bot < gap:
         allowed, rate_why = False, "主动发言冷却剩 %.0fs" % (gap - (now - last_bot))
     if not allowed:
