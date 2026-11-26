@@ -74,6 +74,31 @@ def _to_mp3(raw: bytes) -> bytes:
     return _ffmpeg_mp3(raw)
 
 
+# 静音阈值：真静音 mean_volume 约 -91 dB，正常说话在 -20 上下。取 -50 只挡
+# 「录了半天没出声」，不碰清辅音多的小声说话
+_SILENT_DB = -50.0
+
+
+def _is_silent(audio: bytes) -> bool:
+    """mp3 字节是否基本没有声音。
+
+    Gemini 听到静音会凭空编一句人话（实测 4 秒 anullsrc 转出「那就是有点忙呢」，
+    440Hz 正弦转出「喂」），这句假的还会被当成用户原话喂给模型。
+    """
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-nostats", "-i", "pipe:0",
+             "-af", "volumedetect", "-f", "null", "-"],
+            input=audio, capture_output=True, timeout=30,
+        )
+    except Exception:
+        return False  # 测不出来就别拦，宁可多花一次转写
+    m = re.search(rb"mean_volume:\s*(-?[\d.]+) dB", proc.stderr or b"")
+    if not m:
+        return False
+    return float(m.group(1)) < _SILENT_DB
+
+
 async def transcribe(raw: bytes, cfg: dict, logger=None) -> str:
     """字节 → 说话内容。任何一步失败都返回空串，由调用方决定怎么退化。"""
     if not raw or len(raw) > MAX_AUDIO_BYTES:
@@ -90,6 +115,10 @@ async def transcribe(raw: bytes, cfg: dict, logger=None) -> str:
             logger.warning("[fish] 语音解码失败（silk/ffmpeg）：%s: %s", type(e).__name__, str(e)[:100])
         return ""
     if not audio:
+        return ""
+    if _is_silent(audio):
+        if logger:
+            logger.info("[fish] 语音基本是静音（mean_volume < %.0f dB），不送转写", _SILENT_DB)
         return ""
 
     key, key_src = _vision.resolve_key(cfg)

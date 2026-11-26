@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import base64
 import re
 
 # 模板里文字格数可能不止一个，用 | 分隔
@@ -116,11 +117,18 @@ def render(req: str, timeout: float = 25.0):
 
 
 async def make(req: str, timeout: float = 25.0):
-    """异步版：Rust 引擎是阻塞调用，扔线程里跑，别挡住群消息循环。"""
+    """异步版：Rust 引擎是阻塞调用，扔线程里跑，别挡住群消息循环。
+
+    返回 base64 文本（不是原始 bytes）：出站链路统一用 Image.fromBase64，
+    回 bytes 会被二次编码成裂图。
+    """
     try:
-        return await asyncio.wait_for(asyncio.to_thread(render, req), timeout)
+        out = await asyncio.wait_for(asyncio.to_thread(render, req), timeout)
     except Exception:
         return None
+    if not out:
+        return None
+    return base64.b64encode(bytes(out)).decode()
 
 
 def names(limit: int = 40) -> list:

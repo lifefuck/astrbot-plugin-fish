@@ -438,9 +438,10 @@ class MediaMixin:
         """识图完把描述写回时间线那两条记录，后续消息就能看见图里是什么。"""
         try:
             desc = (await self._image_desc(gid, event) or "").strip()
-            if not desc:
-                return
-            shown = f"[图片：{desc[:80]}]"
+            # 识别全链失败也要留痕：只 return 的话上下文永远是裸 [图片]，
+            # 模型拿不到任何线索只能瞎编（实测「一堆截图我这也看不清」）。
+            # 明确写「没看清」，它至少会问一句而不是硬猜。
+            shown = f"[图片：{desc[:80]}]" if desc else "[图片·没看清]"
             msg_entry["text"] = shown
             dlg_entry["text"] = shown
             # 时间线改了还不够：真正喂给模型的是 st.ctx 里那条「谁：[图片]」，

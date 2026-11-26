@@ -148,7 +148,9 @@ def finish_parts(parts: list[str], max_parts: int = 3) -> list[str]:
         msgs = to_messages(p, max_parts=max(1, int(max_parts or 1)))
         out.extend(msgs or ([finish_one(p)] if normalize(p) else []))
     # 收口后可能超过上限：多出来的并入最后一条，绝不再拆
+    # 注意必须是「拼接进最后一条」，不是裸切 out[cap:]——后者会静默丢内容
+    # （实测 3 段 [8,40,25] 只发前两段，25 字整句消失）。
     cap = max(1, int(max_parts or 1))
     if len(out) > cap:
-        out = out[:cap - 1] + [out[cap - 1]]
+        out = out[:cap - 1] + ["".join(out[cap - 1:])]
     return [x for x in out if x]

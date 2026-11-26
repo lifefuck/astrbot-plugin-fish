@@ -38,8 +38,10 @@ def _guarded(text: str, delimiters: str) -> list[str]:
         elif ch in _CLOSE:
             depth = max(0, depth - 1)
         if depth == 0 and ch in delimiters and not in_url:
-            # 按逗号/顿号切开时把它吃掉：连发两条不会一条卡在「就这点火气，」上
-            out.append(buf[:-1] if ch in _SOFT else buf)
+            # 软标点（，、；）保留在块尾：这里切出来只是「为了能装进 max_chars」，
+            # 后面还要回拼，吃掉逗号等于回拼后整句没标点，读着像两件事粘一起
+            # （实测 70 字 4 个逗号，拆完 0 个）。
+            out.append(buf)
             buf = ""
     if buf.strip():
         # 尾巴一两个字的碎片并回上一块，别让它单独成条

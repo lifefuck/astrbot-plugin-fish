@@ -198,19 +198,28 @@ def stalled(rows: list, now: float) -> Tuple[bool, str]:
     return True, "%d 次问句没人接" % len(asks)
 
 
+_BOT_SILENT_MARKS = (
+    "[图片]", "[表情]", "[动图]", "[语音]", "[文件]", "[链接]",
+    "[视频]", "[卡片]", "[斗图]", "[动画表情]", "[PASS]",
+)
+
+
 def _bot_spoke_ts(rows: list) -> float:
     """鱼最后一次「真的说了话」的时间。
 
     纯表情不算说话：它甩一张图交差，却会重置沉默计时，等于一张图把接下来
     4 分钟的插话机会一起堵死——实测 23:11-23:17 那场热聊，warm 档一次没触发，
     就因为中间鱼跟了两张纯图。
+
+    排除表按前缀判，不能只列白名单：respond 的记账串是 `[只发图:嘲讽]` 这种
+    带参数的形态，全等比较会漏，等于纯表情照样重置冷却（实测漏了 7 种）。
     """
     ts = 0.0
     for e in rows:
         if not _entry_is_bot(e):
             continue
         t = str(e.get("text") or "").strip()
-        if not t or t in ("[图片]", "[表情]", "[动图]", "[语音]"):
+        if not t or t in _BOT_SILENT_MARKS or t.startswith("[只发图"):
             continue
         ts = max(ts, _entry_ts(e))
     return ts

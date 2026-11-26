@@ -27,13 +27,22 @@ RE_ATTACK_ALL = re.compile(
     r"(无差别|群嘲|挨个|一个一个|随机挑|挑几个|随便骂|都骂一|都喷一)"
     r"|(?:骂|喷|怼|羞辱|收拾|教训|开骂|开喷)[^。！？\n]{0,8}"
     r"(?:全体|全场|所有人|全部人?|大家|全群|群里所有人)"
-    r"|(?:全体|全场|所有人|全部人?|大家|全群)[^。！？\n]{0,8}(?:都骂|都喷|挨个骂|挨个喷)")
+    # 下面这条不能只写「大家都骂」：那是描述别人的行为（「大家都骂他」= 群里
+    # 都在骂某人），不是让鱼去骂。实测「大家都骂他」「全场都喷那个裁判了」
+    # 都被判成 all，一次 @ 三个人开骂。要求前面有祈使，或后面带「一遍/两句」
+    r"|(?:去|你去|给我|帮我|替我|你来)[^。！？\n]{0,6}"
+    r"(?:全体|全场|所有人|全部人?|大家|全群)"
+    r"[^。！？\n]{0,8}(?:都骂|都喷|挨个骂|挨个喷)"
+    r"|(?:全体|全场|所有人|全部人?|大家|全群)[^。！？\n]{0,6}"
+    r"(?:都骂|都喷)[^。！？\n]{0,4}(?:一遍|一轮|一顿|两句|个遍)")
 
 # 指名：必须是「命令」才认。以前只要句子里出现「骂」就抓后面的字，
 # 于是「天天骂我」「他骂我两句」全被当成派活，它反而不吭声
 RE_TARGET = re.compile(
     r"(?:给我|帮我|替我|你去|快去|去|来)\s*(?:骂|喷|怼|羞辱|收拾|教育)"
-    r"|(?:骂|喷|怼)(?:一下|两句|一顿|几句|他|她|这货|那个)"
+    # 「喷那个裁判」是描述别人在骂人，不是派活；只留真正的命令式量词，
+    # 点名场景由上面「给我/你去…骂」那一支覆盖
+    r"|(?:骂|喷|怼)(?:一下|两句|一顿|几句)"
     # @ 只有跟在骂人动词后面才算靶子。以前这里挂着一个裸的 `|@`，
     # 于是群里任何一条「@张三 在吗」都被当成「派我去骂张三」——
     # 适配器把 @ 渲染成「 @昵称(QQ) 」，find_by_name 还真能从里面抠出人
@@ -41,7 +50,8 @@ RE_TARGET = re.compile(
 
 # 反向：求饶、制止、自嘲都不算派活
 RE_NOT = re.compile(
-    r"(别骂|不要骂|不许骂|骂他干嘛|骂我干嘛|别喷|不要喷|骂得好|该骂|欠骂|活该被骂|被骂了)")
+    # 「无差别骂」里含子串「别骂」，以前整句被当成求饶，指令直接丢掉
+    r"((?<!差)别骂|不要骂|不许骂|骂他干嘛|骂我干嘛|(?<!差)别喷|不要喷|骂得好|该骂|欠骂|活该被骂|被骂了)")
 
 _TARGET_BAN = ("主人", "老板", "群主", "管理", "管理员", "life")
 
@@ -83,11 +93,17 @@ def pick_targets(members: list[dict], recent: list[dict], *, self_uid: str,
                  owner_uid: str = "", want: int = 3) -> list[dict]:
     """从群成员/最近发言人里挑靶子，去掉自己、主人、群管，按最近发言优先。"""
     ban_role = ("admin", "owner")
+    # recent 是调用方从时间线裁出来的，只带 uid/nick，没有 role；
+    # 按它自己的 role 判等于全员都被当成 member，群管照样被骂
+    # （实测把管理员选成靶子，对方能直接把机器人禁言）。这里拿 members 反查。
+    role_of = {str(x.get("uid") or ""): str(x.get("role") or "") for x in members}
 
     def ok(m: dict) -> bool:
         if str(m.get("uid") or "") in (str(self_uid), str(owner_uid or "\0")):
             return False
-        return str(m.get("role") or "member") not in ban_role
+        uid = str(m.get("uid") or "")
+        role = str(m.get("role") or "") or role_of.get(uid, "member")
+        return role not in ban_role
 
     picked, seen = [], set()
     for m in recent:            # 最近说过话的优先，骂「空气」很蠢
@@ -95,7 +111,8 @@ def pick_targets(members: list[dict], recent: list[dict], *, self_uid: str,
         if not u or u in seen or not ok(m):
             continue
         seen.add(u)
-        picked.append({"uid": u, "nick": m.get("nick") or u, "role": m.get("role") or "member"})
+        picked.append({"uid": u, "nick": m.get("nick") or u,
+                       "role": str(m.get("role") or "") or role_of.get(u, "member")})
         if len(picked) >= want:
             return picked
     for m in members:           # 群里还没人说话（刚开局）才回落到成员表

@@ -639,8 +639,18 @@ async def _describe_via_framework(images: list[bytes], cfg: dict, logger=None,
                                   deadline: float | None = None) -> str:
     if _framework_caller is None or not cfg.get("vision_use_framework_provider", True):
         return ""
+    # 必须吃 deadline：框架 provider（Gemini）默认超时 180s，不吃的话整条
+    # 降级链的 20s 预算等于没有，群消息会一起卡住（实测 gather 三路全部挂死）
+    left = None
+    if deadline:
+        left = max(1.0, deadline - time.time())
     try:
-        text = await _framework_caller(images)
+        call = _framework_caller(images)
+        text = await (asyncio.wait_for(call, timeout=left) if left else call)
+    except asyncio.TimeoutError:
+        if logger:
+            logger.warning("[fish] 框架视觉超时（预算 %.0fs 用完），改用直连", left or 0)
+        return ""
     except Exception as e:
         # 拿不到就往下走直连，不在这里吞成「图中没有内容」
         if logger:

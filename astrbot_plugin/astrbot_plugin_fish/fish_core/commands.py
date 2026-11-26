@@ -115,12 +115,17 @@ class CommandsMixin:
             event.stop_event()
             yield event.plain_result("⚠️ 这条得群管发")
             return
-        yaml_path = self.cfg.get("yunzai_other_yaml") or ""
-        was_listed = yunzai_link.in_whitelist(yaml_path, int(gid))
+        yaml_path = str(self.cfg.get("yunzai_other_yaml") or "").strip()
+        # 路径必须显式配：以前缺省会回退到硬编码的云崽路径，等于 /off 去改
+        # 另一个服务（trss-yunzai）的配置——审查时实测把别的群从 whiteGroup 删了
+        sync_ok = bool(yaml_path) and bool(self.cfg.get("yunzai_sync", True))
+        was_listed = yunzai_link.in_whitelist(yaml_path, int(gid)) if sync_ok else False
         self._set_muted(gid, True, restore_yunzai=was_listed)
-        if self.cfg.get("yunzai_sync", True):
+        if sync_ok:
             # 只关我自己没用：云崽那边的插件还在群里动，「全关」就是句空话
             yunzai_link.sync_whitelist(yaml_path, int(gid), False)
+        elif self.cfg.get("yunzai_sync", True):
+            logger.warning("[fish] 群 %s 静默：没配 yunzai_other_yaml，跳过云崽同步", gid)
         logger.info("[fish] 群 %s 静默（%s 触发）", gid, event.get_sender_id())
         self.log_event("mute", gid, "静默", who=event.get_sender_name())
         event.stop_event()
@@ -155,9 +160,10 @@ class CommandsMixin:
                 logger.info("[fish] 群 %s /on 顺带清掉 override.enabled", gid)
             except Exception as e:
                 logger.warning("[fish] 群 %s 清理 override 失败：%s", gid, e)
-        if self.cfg.get("yunzai_sync", True) and restore_yunzai:
+        _yp = str(self.cfg.get("yunzai_other_yaml") or "").strip()
+        if _yp and self.cfg.get("yunzai_sync", True) and restore_yunzai:
             # 只有当 /off 之前它本来在白名单里才加回去，否则就是凭空塞群号
-            yunzai_link.sync_whitelist(self.cfg.get("yunzai_other_yaml") or "", int(gid), True)
+            yunzai_link.sync_whitelist(_yp, int(gid), True)
         # 禁言缓存也清掉：刚解禁的那一刻不该还拿旧记录装死
         self._ban_expire.pop(gid, None)
         self._ban_checked.pop(gid, None)
