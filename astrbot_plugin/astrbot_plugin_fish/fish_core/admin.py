@@ -472,6 +472,15 @@ class AdminMixin:
                 want=int(self.cfg.get("insult_max_targets", 3) or 3))
         if not targets:
             return False
+        # 别的机器人不是人：它的播报本来就是机器生成的，骂它只会被当成人话对喷，还刷屏
+        try:
+            _peers = self._peer_set()
+        except Exception:
+            _peers = set()
+        if _peers:
+            targets = [t for t in targets if str(t.get("uid") or "") not in _peers]
+            if not targets:
+                return False
 
         self._insult_ts = {**getattr(self, "_insult_ts", {}), gid: now}
         _said: list[str] = []

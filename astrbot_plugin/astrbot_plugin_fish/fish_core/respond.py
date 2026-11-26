@@ -30,6 +30,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.core.message.components import At, AtAll, Image, Plain, Poke, Reply
 
 from .kernel import *  # noqa: F401,F403
+from . import huoren
 
 
 def _pick_meme(tag: str, text: str = ""):
@@ -175,13 +176,21 @@ class RespondMixin:
         except Exception:
             raw = ""
         try:
-            if not raw.strip() or safety_guard.is_pass_signal(raw):
+            if not raw.strip() or safety_guard.is_pass_signal(raw) or humanize.is_silent(raw):
                 event.set_result(MessageEventResult(chain=[]))
                 # 必须 stop：空链只是「不发」，框架的 process_stage 看到「没发过 + 被@/私聊」
                 # 还会拿默认人格和默认 provider 再答一遍，群里就多出一条不是它说的回复
                 event.stop_event()
                 return
-            cut = (composer.sanitize_reply(raw) or "").strip()[:200]
+            cut = (composer.sanitize_reply(raw) or "").strip()
+            # 兜底这条路以前直接截 200 字：think 块、括号旁白、八股句全原样进群。
+            # 现在过一遍人味化，再按 fish 的阈值（45 字/最多 2 条）取第一条——
+            # 异常路径上宁少说一句，也别把没洗干净的原文甩出去
+            cut = humanize.strip_periods(humanize.clean_text(cut)).strip()
+            if cut:
+                segs = humanize.split_segments(cut, max_seg=2, max_chars=45)
+                cut = (segs[0] if segs else cut).strip()
+            cut = cut[:200]
             # 异常兜底最该拦隐私：这条路上没有后续任何一道闸，
             # 模型原文里的内网地址、机器路径、配置文件名会直接被发出去
             if cut and safety_guard.leaks_private(cut):
@@ -270,6 +279,17 @@ class RespondMixin:
         text = "".join(c.text for c in result.chain if isinstance(c, Plain))
         if not text.strip():
             logger.info("[fish] 群 %s 这轮只有非文本内容，释放冷却位", gid)
+            self._release_claim(st, _tok)
+            return
+
+        # 沉默出口：模型整条只吐了 <silent> / [NO_REPLY]，就是「这轮不接」。
+        # 以前这类标记会被当成正文清洗掉、剩一条空气泡，或者被兜底逻辑还原成原文
+        # 发进群；这里直接静默，一个字都不发
+        if humanize.is_silent(text):
+            logger.info("[fish] 群 %s 模型选择沉默（%s），不发", gid, text.strip()[:20])
+            self.log_event("skip", gid, meta.get("text", ""), who=meta.get("nick", ""), why="沉默")
+            event.set_result(MessageEventResult(chain=[]))
+            event.stop_event()
             self._release_claim(st, _tok)
             return
 
@@ -369,6 +389,35 @@ class RespondMixin:
         # 画图标签剥完正文就空了：正文本来该是空的，绝不能回退成「带标签的原句」——
         # 回退之后标签会被当正文发进群（实测「[画图:喜报:今天没人迟到]」就是这么裸奔的）
         raw_text = clean or (meme_gen.extract_tag(text)[0].strip() if draw_req else text)
+        # AI 味闸（搬 dsh-aiflavour）：先看原文再洗。它会学：同一个 AI 腔词根
+        # 本群累计够次数才真开始剥，久不命中自动降级，避免词表越滚越大误伤
+        # 正常口语。会话刹车 = 刚被拦过又来说教，整条不发（光剥会削出一堆半句）
+        try:
+            if self.cfg.get("aiflavour_enabled", True) and raw_text.strip():
+                _gm = str(self.cfg.get("aiflavour_mode", "strip") or "strip").lower()
+                humanize.configure_flavour(
+                    mode=_gm,
+                    learn_min=self.cfg.get("aiflavour_learn_min", 3),
+                    deactivate_days=self.cfg.get("aiflavour_deactivate_days", 7),
+                    short_window=self.cfg.get("aiflavour_short_window", 180),
+                )
+                _fi = humanize.flavour_inspect(raw_text, gid)
+                if _fi["brake"] and _gm != "shadow":
+                    logger.info("[fish] 群 %s AI 味刹车整条不发（%s）", gid,
+                                "、".join((_fi["dyn_hits"] + _fi["strong_hits"])[:3]))
+                    self.log_event("flavour_block", gid, raw_text[:40], who=meta.get("nick", ""))
+                    event.set_result(MessageEventResult(chain=[]))
+                    event.stop_event()
+                    self._release_claim(st, _tok)
+                    return
+                if _gm != "shadow":
+                    _stripped, _hits = humanize.flavour_strip(raw_text)
+                    if _hits:
+                        logger.info("[fish] 群 %s 剥 AI 味「%s」", gid, "、".join(_hits[:3]))
+                        raw_text = _stripped
+        except Exception as e:
+            logger.debug("[fish] AI 味闸异常（放行）：%s", e)
+
         text = composer.sanitize_reply(raw_text)
         # 出口清洗：内部独白、动作旁白、Markdown 痕迹在这剥掉。
         # URL 和代码块会先变占位符再还原，联网搜到的内容不会被误删
@@ -379,6 +428,18 @@ class RespondMixin:
             # 于是「整句都是（甩了甩尾巴）」这种原文会被原样发进群
             if text2 is not None:
                 text = text2
+            # 人味化：削客服腔首尾（「好的，」「希望能帮到你」），再整句删内容型八股
+            # （「不是……而是……」、盖章收尾）。只删句子不改写：改写等于替模型说话
+            if text.strip():
+                text = humanize.clean_ai_tropes(text)
+                text = humanize.strip_bad_sentences(text)
+                # 鱼八骨词表（搬 salttove 的 filter_core）：认错官腔、打分、
+                # 「以下是几个版本」这类，逐句过一遍。删空就删空，不回兜底话术
+                text = humanize.clean_yubagu(
+                    text,
+                    short_cut=bool(self.cfg.get("humanize_short_cut", False)),
+                    fiction=bool(self.cfg.get("humanize_fiction", False)),
+                )
             # 骂人词降级：模型写嗨了带出「傻逼/死全家」这类直白词，换成谐音，
             # 而不是把整句丢掉——丢掉会让它越答越短，最后只剩一句「急什么」
             if text.strip():
@@ -585,7 +646,8 @@ class RespondMixin:
         # 2.85 排版归一化：模型会在中文词之间莫名加空格、连敲两个换行，
         # 群友一眼看出是机器。确定性清洗，不靠提示词（提示词保证不了）
         try:
-            text = typeset.normalize(text)
+            # 先把手打空格断句转成逗号，再交给 typeset——顺序反了空格就被吃没了
+            text = typeset.normalize(humanize.pause_to_comma(text))
         except Exception as e:
             logger.debug("[fish] 排版归一化失败：%s", e)
 
@@ -611,7 +673,19 @@ class RespondMixin:
         final = text
         parts = [final]
         max_parts = int(self.cfg.get("split_max_parts", 3) or 3)
-        if self.cfg.get("split_enabled", True):
+        # 3.0 逗号拆条（搬 dsh-human）：26 字以内按第一个合格逗号拆成两条，
+        # 0.7 概率——100% 都拆就成了新的机器规律。跟 fish 原有拆条不冲突：
+        # 一个管短句的一口气，一个管长句的超长，两边上限都是 2 条
+        _pre: list[str] = []
+        if self.cfg.get("human_comma_split", True):
+            try:
+                _pre = humanize.humanize_split(text)
+            except Exception as e:
+                logger.debug("[fish] 逗号拆条失败：%s", e)
+        if len(_pre) == 2:
+            parts = _pre
+            max_parts = 2
+        elif self.cfg.get("split_enabled", True):
             # 心境参与条数上限：情绪低落/犯困时只发两条，兴致高才三条。
             # 之前这里写死配置值，affect.profile() 算了却没人用，等于白算
             max_parts = int(self.cfg.get("split_max_parts", 3) or 3)
@@ -631,6 +705,34 @@ class RespondMixin:
             parts = typeset.finish_parts(parts, max_parts=max_parts) or [final]
         except Exception as e:
             logger.debug("[fish] 排版收口失败：%s", e)
+        # 去句号化（搬 MaiBot cleaner 的 strip_periods）：气泡里没人敲「。」。
+        # 必须放在拆条之后——先抹句号，splitter 就找不到断句点，整段会糊成一条
+        try:
+            _dp = [humanize.strip_periods(p) for p in parts if (p or "").strip()]
+            if _dp:
+                parts = _dp
+        except Exception as e:
+            logger.debug("[fish] 去句号失败：%s", e)
+        # 毛边（对照 dsh-huoren 的 humanize.js）：一条回复最多一个错别字，且必须补一句
+        # 「打错了，是X」。只在单条时做——已经拆成两条了还补第三条自我更正，
+        # 就碎成三截了，比不错字更假。做完再进下面的长度闸和图/表情包
+        try:
+            if self.cfg.get("huoren_typo_enabled", True) and parts:
+                _parts2, _corr = huoren.humanize_parts(
+                    parts,
+                    typo_rate=float(self.cfg.get("huoren_typo_rate", 0.06) or 0),
+                    correction_rate=float(self.cfg.get("huoren_correction_rate", 0.5) or 0),
+                )
+                if _corr and len(_parts2) < 2:
+                    parts = _parts2 + [humanize.strip_periods(_corr)]
+                elif _parts2 != parts:
+                    parts = _parts2
+                    logger.info("[fish] 群 %s 造了个错别字：%r", gid, parts[0][:24])
+        except Exception as e:
+            logger.debug("[fish] 毛边失败：%s", e)
+        # 记账/上下文里记「群里真正看到的那几条」，别再拿没去过句号的原文
+        if parts:
+            final = "".join(parts)
         # 空文本不出站：之前 parts[0] 为空也照样拼一条 Plain("")，群里显示的就是
         # 一个空气泡（17:57:38 那条），用户以为鱼哑了。图还能发，纯空链直接不发
         head = (parts[0] or "").strip()
@@ -733,10 +835,12 @@ class RespondMixin:
             st.dialogue.append({"who": str(self.cfg.get("bot_nickname") or "我"),
                                 "text": final, "ts": now, "me": True})
             # 压进上文的是「真正发出去的那句」：清洗/砍长发生在出口，
-            # 拿模型原文会让下一次看到的自己跟群里看到的自己不是一个嘴
+            # 拿模型原文会让下一次看到的自己跟群里看到的自己不是一个嘴。
+            # 再走一遍人味化 + 300 字截断：上下文里留着八股原话，下一轮它照着学，
+            # 越聊越像机器人——这是自我污染最直接的来源
             _sk = str(acct.get("gid") or "")
             if _sk.isdigit() or _sk.startswith("private"):
-                self._push_ctx(st, "assistant", final)
+                self._push_ctx(st, "assistant", humanize.clean_for_history(final, 300))
             self._ctx_saved_at = now
             self._save_recent_context()
             st.last_bot_reply_ts = now
@@ -756,13 +860,16 @@ class RespondMixin:
                            why=acct.get("reason", ""), meme=acct.get("meme", 0),
                            parts=acct.get("parts", 1))
             try:
-                if acct.get("gid_real") != "private":
-                    self.memory.attach_reply(acct["gid_real"], acct["uid"],
-                                             acct["text"], final)
+                # acct.get("gid_real") 可能是 None（主动发言/骂人这些路径不设它），
+                # 只判 != "private" 会让 None 走进来再 acct["gid_real"] 抛 KeyError，
+                # 记忆整段丢掉——线上两次 'gid_real' 报错就是这么来的
+                _gid_real = acct.get("gid_real") or acct.get("gid")
+                if _gid_real and _gid_real != "private":
+                    self.memory.attach_reply(_gid_real, acct["uid"], acct["text"], final)
                     # 目的地记忆：这句对谁说的。同一件事第三次开口前要自查，
                     # 靠的就是这里每天攒的「我说过什么」
                     self.memory.record_said(
-                        acct["gid_real"], str(acct.get("uid") or ""), final,
+                        _gid_real, str(acct.get("uid") or ""), final,
                         to_nick=str(acct.get("nick") or ""))
             except Exception as e:
                 logger.warning("[fish] 记忆写入失败: %s", e)
