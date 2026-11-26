@@ -312,12 +312,16 @@ def pick_scene_b64(scene: str, text: str = "") -> Optional[str]:
     if scene not in SCENES:
         return pick_b64("", text)
     _load()
-    pool: List[dict] = []
-    for emo in SCENES[scene]:
-        pool.extend(_by_emotion.get(emo, []))
-    b64 = _try_pick(pool) if pool else None
-    if b64:
-        return b64
+    # 以前把场景下所有情绪的图堆成一个池子随机抽，等于按数量加权：
+    # 冷场桶 78 张里卖萌占 72，于是每次冷场都是同一类卖萌图。
+    # 改成先均匀抽一个情绪、再从那个情绪里抽图，卖萌的份额降到 1/3
+    _emos = [e for e in SCENES[scene] if _by_emotion.get(e)]
+    random.shuffle(_emos)
+    for emo in _emos:
+        b64 = _try_pick(_by_emotion.get(emo, []))
+        if b64:
+            return b64
+    b64 = None
     for emo in SCENE_FALLBACK.get(scene, ()):
         b64 = _try_pick(_by_emotion.get(emo, []))
         if b64:
