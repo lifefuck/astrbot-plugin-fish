@@ -120,7 +120,7 @@ class PokeMixin:
         system_prompt = composer.build_system_prompt(
             prompts.SYSTEM_PROMPT, bot_nick=str(self.cfg.get("bot_nickname") or "小鲸鱼"),
             bot_qq=self_id, group_id=gid, is_private=(gid == "private"),
-        )
+        ) + humanize.STYLE_REMINDER + "\n\n" + humanize.GUARD
         # 拼 prompt 的逻辑放在 poke_context 里，两条分支才测得动
         user_prompt = poke_context.build_prompt(
             poke_info, who_hint,

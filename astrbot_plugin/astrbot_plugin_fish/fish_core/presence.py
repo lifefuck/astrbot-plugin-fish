@@ -27,7 +27,15 @@ SHORTS = {
     "冷场": ("嗯", "在", "说", "然后呢"),
 }
 
-_LAUGH_RE = ("哈哈", "笑死", "草", "233", "6", "绝了", "乐", "离谱", "破防", "绷不住")
+# 裸「草/6/乐」不能放进子串匹配：「6 点上线」「第 6 个」「音乐会」全被判成接梗，
+# 于是鱼对着一句排班表回「哈哈哈哈」。单字接梗只认整句就是它的情况（见 _is_laugh）
+_LAUGH_RE = ("哈哈", "笑死", "233", "666", "绝了", "离谱", "破防", "绷不住", "笑不活了")
+
+
+def _is_laugh(t: str) -> bool:
+    if any(k in t for k in _LAUGH_RE):
+        return True
+    return t.strip() in ("草", "草草", "卧槽", "6", "乐", "笑死", "绝")
 _BOAST_RE = ("我太强", "无敌", "乱杀", "秒了", "赢了", "满血", "五杀", "MVP", "稳")
 _SELF_DEPRE_RE = ("我太菜", "我又", "我不行", "废了", "摆烂", "躺平", "要饭", "手残", "完蛋")
 _ASK_RE = ("?", "？", "怎么", "如何", "为啥", "为什么", "报错", "求助", "在哪", "哪个",
@@ -72,7 +80,7 @@ def classify_text(text: str, images: int = 0) -> Tuple[bool, str]:
         return False, ""
     if any(k in t for k in _SELF_DEPRE_RE):
         return True, "自嘲"
-    if any(k in t for k in _LAUGH_RE):
+    if _is_laugh(t):
         return True, "接梗"
     if any(k in t for k in _BOAST_RE):
         return True, "调侃"
@@ -87,7 +95,9 @@ def judge(sig, dialogue: Optional[List[dict]] = None, cfg: Optional[dict] = None
           now: Optional[float] = None) -> Tuple[bool, str, str]:
     """完整判断：先排除硬条件，再看内容。返回 (可否, 场合, 理由)。"""
     now = float(now if now is not None else time.time())
-    if not (cfg or {}).get("presence_enabled", False):
+    # 默认值必须跟 kernel.py/main.py 一致（都是 True）：这里写 False 意味着
+    # 没配过这项的老配置，main 会进来调 judge 然后永远收到「在场模式没开」
+    if not (cfg or {}).get("presence_enabled", True):
         return False, "", "在场模式没开"
     # 有指向（@鱼/引用鱼/喊名字/追问）的时候不是「在场」，是「应答」，走正常链路
     for attr in ("is_at", "is_quote_bot", "is_wake", "is_follow"):

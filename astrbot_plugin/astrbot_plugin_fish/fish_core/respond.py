@@ -891,14 +891,22 @@ class RespondMixin:
                 # 记忆整段丢掉——线上两次 'gid_real' 报错就是这么来的
                 _gid_real = acct.get("gid_real") or acct.get("gid")
                 if _gid_real and _gid_real != "private":
-                    self.memory.attach_reply(_gid_real, acct["uid"], acct["text"], final)
+                    # 两次写入分开兜：以前一个抛异常另一条也不写了，而且只有 WARNING，
+                    # 一周两条「记忆写入失败」等于悄悄丢了对话上下文
+                    try:
+                        self.memory.attach_reply(_gid_real, acct["uid"], acct["text"], final)
+                    except Exception as e:
+                        logger.error("[fish] 记忆写入失败（attach_reply，上下句对不上了）：%s", e)
                     # 目的地记忆：这句对谁说的。同一件事第三次开口前要自查，
                     # 靠的就是这里每天攒的「我说过什么」
-                    self.memory.record_said(
-                        _gid_real, str(acct.get("uid") or ""), final,
-                        to_nick=str(acct.get("nick") or ""))
+                    try:
+                        self.memory.record_said(
+                            _gid_real, str(acct.get("uid") or ""), final,
+                            to_nick=str(acct.get("nick") or ""))
+                    except Exception as e:
+                        logger.error("[fish] 记忆写入失败（record_said，这话以后查不到）：%s", e)
             except Exception as e:
-                logger.warning("[fish] 记忆写入失败: %s", e)
+                logger.error("[fish] 记忆写入失败（取会话标识阶段）: %s", e)
         except Exception as e:
             logger.exception("[fish] 记账失败（消息已发出，不影响这轮）: %s", e)
 

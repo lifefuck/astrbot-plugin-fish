@@ -181,6 +181,10 @@ async def do_unban(bot, gid: str, sender_id: str, nick_map: dict, at_ids: list,
         return f"群里叫「{nick}」的不止一个，@ 一个再说话"
     if qq in (self_id, owner_qq):
         return "这个不行，换个人"
+    # 跟禁言同一套保护：借机器人的号去解别人的禁（尤其是别的管理），
+    # 冲突同样烧到机器人身上
+    if qq != sender_id and await _is_group_admin(bot, gid, qq):
+        return "他也是管理，我不掺和"
     try:
         res = await bot.call_action("set_group_ban", group_id=int(gid),
                                     user_id=int(qq), duration=0)

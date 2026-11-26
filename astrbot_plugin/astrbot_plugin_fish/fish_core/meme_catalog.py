@@ -297,6 +297,9 @@ def pick_b64(tag: str = "", text: str = "") -> Optional[str]:
             b64 = _try_pick(_candidates_for_tag(candidate))
             if b64:
                 return b64
+        # 指定了情绪就别再拿关键词乱配：以前 [表情:生气] 库里有图但文件名没对上，
+        # 就顺着文本兜底发出一张大笑图，群里就是「骂完人自己笑」。宁可不发
+        return None
     return _try_pick(_candidates_for_text(text))
 
 

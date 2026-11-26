@@ -54,10 +54,12 @@ _AT_META_SENTENCE = re.compile(r"[^。！？!?\n，,、]{0,20}?(?:我)?(?:没有
 needs_games_kb = _prompts.needs_games_kb
 
 
-def style_samples_hint(group_id, limit: int = 3) -> str:
-    """从本群真实聊天里抽几组「有人说→别人怎么接」，给模型一个语感锚点。
+def style_samples_hint(group_id, limit: int | None = None) -> str:
+    """从本群真实聊天里抽几组「有人说→别人怎么接」，给模型语感锚点。
 
     形容词教不会语气，示例才教得会；每次随机换一批，避免它把某一组背成口头禅。
+    形状照 dsh-style：条数默认 6、去重、末尾给一个「本群真人回复中位数」当锚点——
+    光给例子不说数字，模型会往长里写；给了中位数它才知道该压到几字。
     """
     if not group_id:
         return ""
@@ -72,10 +74,25 @@ def style_samples_hint(group_id, limit: int = 3) -> str:
     pool = [x for x in _style_cache["data"] if str(x.get("gid")) == str(group_id)]
     if len(pool) < 3:
         return ""
-    picked = random.sample(pool, min(5, len(pool)))
+    n = max(1, int(limit or 6))
+    picked, seen = [], set()
+    for x in random.sample(pool, min(len(pool), max(n * 3, n))):
+        b = str(x.get("b") or "").strip()
+        if not b or b in seen:
+            continue
+        seen.add(b)
+        picked.append(x)
+        if len(picked) >= n:
+            break
+    if not picked:
+        return ""
+    # 中位数用整个池子算（不受本次抽样影响），是这一群人「平时回多长」的事实
+    lens = sorted(len(str(x.get("b") or "").strip()) for x in pool if str(x.get("b") or "").strip())
+    median = lens[len(lens) // 2] if lens else 0
     body = "\n".join("「" + str(x["a"]) + "」→「" + str(x["b"]) + "」" for x in picked)
-    return ("\n【这个群真实的接话长这样】别照抄内容，学的是「随口一句、踩在具体那件事上」的劲。\n"
-            "这些都是别人的旧对话，里面的人名、群名、事都跟现在无关，别拿来当现在的人说：\n" + body)
+    tail = f"\n（这个群真人回复的中位长度是 {median} 个字，保持在这个量级就对了。）" if median else ""
+    return ("\n【这个群真实的接话长这样】别照抄内容，学的是「随口一句、踩在具体那件事上」的劲。" + tail +
+            "\n这些都是别人的旧对话，里面的人名、群名、事都跟现在无关，别拿来当现在的人说：\n" + body)
 
 
 def time_hint(now: float | None = None) -> str:

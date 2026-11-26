@@ -204,10 +204,12 @@ def process_number_bomb(group_id: int, text: str, user_id: int,
                 f"猜了 {guesses} 轮，惩罚是：\n{p}"
             )
         elif val < target:
-            game["low"] = val
-            return True, f"安全，范围缩到【{val} ~ {high}】"
+            # 边界本身已经被猜过了，区间要往里收一格，否则下一轮照着提示再猜一次
+            # 同一个数，永远「安全」
+            game["low"] = val + 1
+            return True, f"安全，范围缩到【{val + 1} ~ {high}】"
         else:
-            game["high"] = val
-            return True, f"安全，范围缩到【{low} ~ {val}】"
+            game["high"] = val - 1
+            return True, f"安全，范围缩到【{low} ~ {val - 1}】"
 
     return False, None

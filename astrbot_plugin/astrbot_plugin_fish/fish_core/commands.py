@@ -67,6 +67,11 @@ class CommandsMixin:
         # 还会 stop_event 让 on_private 再也收不到。只认真·指令形态。
         _raw = (event.message_str or "").strip()
         if not re.match(r"^[/／]?(tocken|token|用量|token用量)(\s+文字)?$", _raw, re.I):
+            # 写了 /tocken 但参数不认识：以前直接放行给 LLM，群里看到的是
+            # 一句莫名其妙的闲聊回复。明确拒绝比装作没看见好
+            if re.match(r"^[/／](tocken|token|用量)", _raw, re.I):
+                event.stop_event()
+                yield event.plain_result("用法：/tocken（发图）或 /tocken 文字")
             return
         try:
             owner = str(self.cfg.get("owner_qq") or "").strip()
@@ -182,8 +187,9 @@ class CommandsMixin:
             self.memes.load_pool(force=True)
             self.memes.load_group_slang()
         except Exception as e:
+            # 原始异常里常带绝对路径和 json 行号，发到群里等于把自己的目录结构送人
             logger.warning("[fish] 重载热梗失败：%s", e)
-            yield event.plain_result(f"⚠️ 重载失败：{e}")
+            yield event.plain_result("⚠️ 重载失败，细节在日志里")
             return
         stats = {}
         try:

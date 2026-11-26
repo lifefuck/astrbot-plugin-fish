@@ -202,6 +202,20 @@ class MemoryMixin:
         cur = " ".join(str(current_line or "").split())[-60:]
         if cur and ctx and ctx[-1].get("role") == "user" and cur in str(ctx[-1].get("content") or ""):
             ctx.pop()
+        # 只留最近 N 轮，且必须从 user 那条切开（搬 dsh-ctxclean 的 _keep_recent_turns）：
+        # 从 assistant 切开等于留一句「它自己说的、但对的是被砍掉的那句」，
+        # 模型会拿这话当上下文接着编，答非所问的体感一半来自这里
+        keep = int(self.cfg.get("ctx_keep_turns", 30) or 30)
+        if keep > 0:
+            n_user = sum(1 for m in ctx if m.get("role") == "user")
+            if n_user > keep:
+                seen = 0
+                for i in range(len(ctx) - 1, -1, -1):
+                    if ctx[i].get("role") == "user":
+                        seen += 1
+                        if seen == keep:
+                            ctx = ctx[i:]
+                            break
         return ctx
 
     def _thin_context(self, st: "GroupState", text: str) -> str:

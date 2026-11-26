@@ -168,6 +168,19 @@ def gen_prompt(target_nick: str, context: str) -> str:
             "写 2 行怼他的短句，直接输出短句。")
 
 
+def strip_lead_nick(line: str, nick: str) -> str:
+    """@ 后面已经带了名字，模型再复读一遍就变成「@张三 张三你也就这样」。
+    只剥句首最多两次，中间出现的不动（可能是句子主语）。"""
+    s = str(line or "").strip()
+    n = str(nick or "").strip()
+    if not n or len(n) < 2:
+        return s
+    for _ in range(2):
+        if s.startswith(n):
+            s = s[len(n):].lstrip(" ，,、:：!！~～-")
+    return s
+
+
 def clean_lines(text: str, *, limit: int = 2) -> list[str]:
     """把模型返回的东西收拾成能直接 @ 出去的短句：去编号、去引号、限长、过谐音降级。"""
     out = []

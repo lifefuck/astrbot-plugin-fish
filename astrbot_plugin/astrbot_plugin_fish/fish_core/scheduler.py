@@ -121,7 +121,11 @@ def _entry_is_bot(e: Dict[str, Any]) -> bool:
 def windowed(dialogue: Iterable[Dict[str, Any]], now: float, window: float,
              limit: int) -> list:
     """取窗口内的最后 limit 条：先按时间裁，再按条数裁。"""
-    rows = [e for e in (dialogue or ()) if now - _entry_ts(e) <= window and _entry_ts(e) > 0]
+    # 未来时间戳（时钟跳变/别的进程写脏）以前也能通过 `now - ts <= window`
+    # 并且排序后永远排在最后，等于一条假消息长期霸占 rows[-1] 的位置。
+    # 给 60 秒容差挡住它，正常消息不受影响
+    rows = [e for e in (dialogue or ())
+            if 0 < _entry_ts(e) <= now + 60.0 and now - _entry_ts(e) <= window]
     rows.sort(key=_entry_ts)
     return rows[-limit:] if limit and limit > 0 else rows
 

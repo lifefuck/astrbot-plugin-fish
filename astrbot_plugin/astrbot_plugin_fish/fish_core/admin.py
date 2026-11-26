@@ -494,6 +494,9 @@ class AdminMixin:
                 logger.warning("[fish] 骂人短句生成失败：%s", e)
                 raw = ""
             for line in insult_actions.clean_lines(raw, limit=2):
+                line = insult_actions.strip_lead_nick(line, t["nick"])
+                if not line:
+                    continue
                 try:
                     await event.send(MessageChain(chain=[At(qq=str(t["uid"])), Plain(" " + line)]))
                 except Exception as e:

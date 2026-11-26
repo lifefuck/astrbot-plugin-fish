@@ -29,7 +29,7 @@ from astrbot.api.event.filter import EventMessageType
 from astrbot.api.star import Context, Star, register
 from astrbot.core.message.components import At, AtAll, Image, Plain, Poke, Reply
 
-from . import fish_memory
+from . import fish_memory, huoren
 from .kernel import *  # noqa: F401,F403
 
 
@@ -45,28 +45,51 @@ class PromptMixin:
             prompts.SYSTEM_PROMPT, bot_nick=str(self.cfg.get("bot_nickname") or "小鲸鱼"), bot_qq=self_id,
             group_id=gid or "-", is_private=is_private,
         )
+        # 大肥鱼 humanizer 的 STYLE_REMINDER，原句搬过来挂在人设最后。
+        # 为什么放在末尾：开头的位置已经被身份锚点占了，结尾这一句离生成最近，压得住腔调
+        if humanize.STYLE_REMINDER.strip() not in system_prompt:
+            system_prompt = system_prompt + humanize.STYLE_REMINDER
+        # 生成前禁忌（salttove DEFAULT_GUARD 原句）：告诉它别写成什么，比事后删更省事。
+        # 和 STYLE_REMINDER 同一位置——末尾离生成最近，压得住
+        if humanize.GUARD.strip() not in system_prompt:
+            system_prompt = system_prompt + "\n\n" + humanize.GUARD
+        # 心流（对照 dsh-huoren 的 mood.js）：energy/warmth 按会话落盘，被催/被骂/深夜
+        # 掉，被谢涨，每轮向基线（60/55）回落 6%，最后压成一句话挂在人设末尾。
+        # 只在这句话有内容时才加——状态正常就别白占 token
+        if self.cfg.get("huoren_mood", True):
+            try:
+                _mk = "%s-%s" % (gid or "private", uid or "-")
+                _mood_st = huoren.advance(huoren.load(str(DATA_DIR), _mk), text)
+                huoren.save(str(DATA_DIR), _mk, _mood_st)
+                _mood_line = huoren.describe(_mood_st)
+                if _mood_line:
+                    system_prompt = system_prompt + "\n\n【此刻状态】" + _mood_line
+            except Exception as e:
+                logger.debug("[fish] 心流状态失败：%s", e)
 
         # 记忆召回：按当前这句检索这个人在这个群的历史记忆
         memory_lines = []
         if gid and gid != "private":
             try:
                 _req = bool(self.cfg.get("memory_source_required", True))
+                # 置信度门槛要在检索那一步就生效，不能只在最后的格式化里过滤
+                _mconf = self.cfg.get("memory_min_confidence")
+                _mconf = 0.5 if _mconf is None else float(_mconf)
                 recalled = await asyncio.to_thread(
                     self.memory.recall, gid, uid, text,
                     cfg_int(self.cfg, "memory_recall_topk", 4), 14.0,
-                    "active" if _req else "passive")
+                    "active" if _req else "passive", _mconf)
                 # 主动召回没命中、而这句又是在问事：放宽到「有话题重合就许引用」。
                 # 只降一档、不放开无来源的条目——问到才提，跟前一条规则不冲突
                 if not recalled and _req and re.search(r"[?？]|吗|么|啥|什么|几|哪|怎么|为什么", text or ""):
                     recalled = await asyncio.to_thread(
                         self.memory.recall, gid, uid, text,
-                        cfg_int(self.cfg, "memory_recall_topk", 4), 14.0, "passive")
+                        cfg_int(self.cfg, "memory_recall_topk", 4), 14.0, "passive", _mconf)
                     if recalled:
                         logger.info("[fish] 记忆改用被动召回：%d 条", len(recalled))
                 # 过滤碎片、近重去重、带出处，全在 fish_memory.shape_recalled 一处
                 # 主动引用的置信度门槛走配置（0 是合法值，不能用 or 兜底）
-                _min_conf = self.cfg.get("memory_min_confidence")
-                _min_conf = 0.5 if _min_conf is None else float(_min_conf)
+                _min_conf = _mconf
                 memory_lines = fish_memory.shape_recalled(
                     recalled, nick=nick, text=text,
                     fmt_when=self._fmt_mem_when, limit=2,
@@ -264,7 +287,7 @@ class PromptMixin:
             memory_lines=memory_lines,
             affect_parts=affect_parts,
             style_hint=(composer.style_samples_hint(
-                gid, int(self.cfg.get("prompt_budget_style_max", 3) or 3))
+                gid, int(self.cfg.get("prompt_budget_style_max", 5) or 5))
                 if gid != "private" else ""),
             meme_hint=meme_hint,
             wiki_hint=wiki_hint,
@@ -272,7 +295,7 @@ class PromptMixin:
             budget={
                 "memory": int(self.cfg.get("prompt_budget_memory_max", 2) or 0),
                 "memory_chars": int(self.cfg.get("memory_prompt_budget", 160) or 0),
-                "style": int(self.cfg.get("prompt_budget_style_max", 3) or 0),
+                "style": int(self.cfg.get("prompt_budget_style_max", 5) or 0),
                 "hint": int(self.cfg.get("prompt_budget_hint_max", 2) or 0),
             },
             anti_repeat_hint=composer.anti_repeat_hint(list(st.recent_bot)),
