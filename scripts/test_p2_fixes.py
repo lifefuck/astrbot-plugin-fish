@@ -168,15 +168,13 @@ ok("「微信发你截图」不判广告", OW.suspicious("微信发你截图") =
 ok("「加微信领红包」仍判广告", OW.suspicious("加微信领红包") == "广告拉人", OW.suspicious("加微信领红包"))
 ok("「你妈的」仍判辱骂", OW.suspicious("你妈的") == "辱骂", OW.suspicious("你妈的"))
 
-# ---------- ⑦ 数字炸弹：str/int 同一局 + 边界提示 ----------
-GAMES.active_games.clear()
-h1, _ = GAMES.process_number_bomb(1001, "数字炸弹", 1, "甲")
-h2, r2 = GAMES.process_number_bomb("1001", "数字炸弹", 2, "乙")
-ok("str/int 群号不会开两局", len(GAMES.active_games) == 1, list(GAMES.active_games))
-ok("第二次开炸弹提示进行中", "进行" in (r2 or ""), r2)
-_, rb = GAMES.process_number_bomb(1001, "1", 3, "丙")
-ok("猜边界值提示改成开区间", "2 ~ 99" in (rb or ""), rb)
-GAMES.active_games.clear()
+# ---------- ⑦ 文字游戏：炸弹已整体删除，只剩单次玩法 ----------
+ok("数字炸弹的接口已删除", not hasattr(GAMES, "process_number_bomb"), "")
+ok("「数字炸弹」当闲聊", GAMES.handle_quick_game_commands("数字炸弹") is None, "")
+ok("裸数字当闲聊", GAMES.handle_quick_game_commands("42") is None, "")
+ok("掷骰子仍可玩", "点" in (GAMES.handle_quick_game_commands("roll") or ""), "")
+ok("抛硬币仍可玩", "硬币" in (GAMES.handle_quick_game_commands("抛硬币") or ""), "")
+ok("抽签仍可玩", "抽到" in (GAMES.handle_quick_game_commands("抽签") or ""), "")
 
 # ---------- ⑧ 备份快照 0600 ----------
 _j = Path(_TMP) / "state.json"

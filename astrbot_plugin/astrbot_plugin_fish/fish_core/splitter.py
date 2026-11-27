@@ -206,11 +206,11 @@ def _merge_stubs(parts: list[str]) -> list[str]:
 
 
 def _clamp(parts: list[str], max_parts: int, max_chars: int) -> list[str]:
-    """最后一道均衡切：条数严格不超过 max_parts，单条超过 max_chars 就再切。
+    """收尾：先把每条压到 max_chars 内，再在不超 max_chars 的前提下合并到 max_parts。
 
-    _pack_sentences 在「max_parts × max_chars 装不下全文」时会多切一条
-    （实测 6 行短句 max_parts=2 出 3 条），单条也可能被它拼回一整墙字。
-    名额不够时宁可单条略超长度，也不多发一条——群里「多发一条」比「字多」明显。
+    以前这里是「按 max_parts 均分」，200 字 / max_chars=45 / max_parts=3 会分出
+    三条 68 字的长墙——字数上限是读起来舒服的底线，条数只是「别刷屏」的软约束，
+    两者打架时永远让字数赢：内容实在装不下就多发一条，也不发一堵墙。
     """
     if max_chars > 0:
         fixed: list[str] = []
@@ -218,9 +218,13 @@ def _clamp(parts: list[str], max_parts: int, max_chars: int) -> list[str]:
             fixed.extend(_hard_cut(p, max_chars) if len(p) > max_chars else [p])
         parts = fixed
     if max_parts and len(parts) > max_parts:
-        whole = "".join(parts)
-        step = -(-len(whole) // max_parts)
-        parts = [whole[i:i + step] for i in range(0, len(whole), step)][:max_parts]
+        merged: list[str] = []
+        for p in parts:
+            if merged and max_chars > 0 and len(merged[-1]) + len(p) <= max_chars:
+                merged[-1] = merged[-1] + p
+            else:
+                merged.append(p)
+        parts = merged
     return parts
 
 
