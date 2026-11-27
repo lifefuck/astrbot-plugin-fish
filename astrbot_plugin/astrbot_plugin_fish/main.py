@@ -53,6 +53,33 @@ from .fish_core.poke import PokeMixin
 from .fish_core.commands import CommandsMixin
 
 
+def _brief_vision(desc: str, limit: int = 160) -> str:
+    """把识图结果压成一句能直接说人话的描述。
+
+    识图返回的三段式是「有没有人 / 在做什么 / 表情或梗」，梗固定压在最后。
+    以前这里直接截前 80 字，等于每次都用最没用的「有没有人」把梗切掉，
+    模型拿到半句「狗狗的）」只能瞎猜，实测回过「啥图 我这边一片空白」。
+    现在优先取「在做什么 + 表情或梗」，并去掉 markdown 记号，超长再截。
+    """
+    if not desc:
+        return ""
+    flat = re.sub(r"[*#`]", "", desc)
+    flat = re.sub(r"\s+", " ", flat).strip()
+    flat = re.sub(r"^画面内容如下\s*[:：]?\s*", "", flat)
+
+    def _seg(name: str) -> str:
+        # 段落之间没有固定换行，靠下一个字段名做边界
+        m = re.search(
+            name + r"\s*[:：]\s*(.+?)(?=\s*(?:有没有人|在做什么|表情或梗|画面内容)|$)",
+            flat,
+        )
+        return m.group(1).strip(" ，,。；;") if m else ""
+
+    parts = [p for p in (_seg("在做什么"), _seg("表情或梗")) if p]
+    out = "；".join(parts) if parts else flat
+    return out[:limit]
+
+
 @register("astrbot_plugin_fish", "life", "把「小鲸鱼」自研 QQ 机器人的对话能力搬进 AstrBot：人设/心境/记忆/群表达/反模板/表情包/接话时机", "1.0.0", "https://github.com/lifefuck/qq-deepseek-realistic-bot")
 class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixin, SendMixin, PromptMixin, RespondMixin, PokeMixin, CommandsMixin, Star):
     """事件分发层。"""
@@ -1189,7 +1216,7 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             if voice_text:
                 prompt_text = f"（发了段语音，说的是：{voice_text[:120]}）"
             else:
-                prompt_text = f"（发了张图，图里是：{vision_desc[:80]}）" if vision_desc else ""
+                prompt_text = f"（发了张图，图里是：{_brief_vision(vision_desc)}）" if vision_desc else ""
             if quote_ctx:
                 # 只有转发/引用、没打字的：拿内容顶上位，别当空消息丢掉
                 prompt_text = quote_ctx
