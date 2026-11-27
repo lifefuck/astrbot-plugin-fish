@@ -463,7 +463,7 @@ class PanelApi:
             self.p.save_group_overrides(groups)
         except Exception as e:
             logger.warning("[fish] 控制台写群配置失败：%s", e)
-            return _json_err(f"写文件失败：{e}")
+            return _json_err("写文件失败，细节看服务端日志")
         self.p.log_event("panel", gid, f"面板改了 {key} = {value}")
         return _json_ok({
             "group_id": gid, "key": key, "value": value, "override": item,
@@ -504,7 +504,7 @@ class PanelApi:
             self.p.save_group_overrides(groups)
         except Exception as e:
             logger.warning("[fish] 控制台删群 override 失败：%s", e)
-            return _json_err(f"写文件失败：{e}")
+            return _json_err("写文件失败，细节看服务端日志")
         self.p.log_event("panel", gid, f"面板删了 override：{'、'.join(removed) or '无'}")
         return _json_ok({"group_id": gid, "removed": removed,
                          "override": item, "state": self._group_state(gid)})

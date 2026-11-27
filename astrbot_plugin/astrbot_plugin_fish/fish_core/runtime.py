@@ -217,6 +217,11 @@ class RuntimeMixin:
         """先写临时文件再改名：面板保存时正赶上进程被杀，也不会留下半截 JSON。"""
         tmp = self.overrides_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(groups, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 里面是每个群的开关和阈值，别跟着进程 umask 变成 664（同目录其他人可写）
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
         tmp.replace(self.overrides_path)
         self._group_overrides = groups
 

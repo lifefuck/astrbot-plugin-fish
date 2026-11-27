@@ -420,6 +420,24 @@ class FishMemoryEngine:
         cands.extend(glob.glob(self.db_path + ".bak-*"))
         return sorted(cands, key=lambda p: os.path.getmtime(p), reverse=True)
 
+    def _prune_corrupt(self, keep_stamps: int = 1) -> None:
+        """删掉历次回滚留下的 .corrupt-* 残骸，只留最近一次。
+
+        回滚时把坏库改名 `.corrupt-<stamp>` 保命是对的，但没人清：
+        data/ 里攒着 2026-11-21 那批 45KB 的坏库，下次出问题谁都分不清哪个是活的。
+        """
+        found = sorted(glob.glob(self.db_path + ".corrupt-*"))
+        if not found:
+            return
+        stamps = sorted({re.sub(r"^.+\.corrupt-", "", p) for p in found}, reverse=True)
+        drop = set(stamps[keep_stamps:])
+        for p in found:
+            if re.sub(r"^.+\.corrupt-", "", p) in drop:
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+
     def _recover_db(self) -> None:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         for suffix in ("", "-wal", "-shm"):
@@ -443,6 +461,7 @@ class FishMemoryEngine:
                     conn.commit()
                 logger.warning("[fish] 记忆库已从备份回滚：%s（%d 字节）",
                                cand, os.path.getsize(self.db_path))
+                self._prune_corrupt()
                 return
             except Exception as e:
                 logger.warning("[fish] 回滚副本不可用 %s：%s", cand, e)

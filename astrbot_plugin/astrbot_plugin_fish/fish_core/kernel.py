@@ -585,13 +585,16 @@ def _parse_song_request(text: str) -> str:
     if quote_m:
         name = quote_m.group(1).strip()
         rest = (text or "").replace(quote_m.group(0), "").strip()
+        # 「点歌，《后来》」：只剩「点歌，」时长度是 3，卡在 <=2 的判定外被拒，
+        # 跟注释承诺相反。判长度前先把标点剥干净
+        rest_bare = rest.strip("：:，,、。.~～—－-\"'“”《》【】（）() \t")
         has_intent = bool(_SONG_INTENT_RE.search(text or ""))
         # 「他说"今天下雨了"」「她回"好的呀"」是转述，不是点歌：
         # 引号前面挂着说话动词就别放歌，否则正常聊天都能点出一首
         quoted_by_speech = bool(re.search(r"(说|讲|问|答|写|提到|回复|喊|念|叫)", rest))
         # 整条消息几乎只剩歌名（「晴天」「好家伙《晴天》」）也算点歌
         if (name and name not in _SONG_STOP_WORDS and not quoted_by_speech
-                and (has_intent or len(rest) <= 2)):
+                and (has_intent or len(rest_bare) <= 2)):
             return name
     for m in _SONG_INTENT_RE.finditer(text or ""):
         raw = m.group(1).strip().strip("　 ")

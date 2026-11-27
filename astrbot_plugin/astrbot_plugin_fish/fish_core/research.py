@@ -22,6 +22,7 @@ import json
 import re
 import time
 from typing import Any
+from urllib.parse import urljoin
 
 from astrbot.api import logger
 
@@ -125,10 +126,25 @@ async def _read_page(http, url: str, limit_chars: int = _PAGE_MAX_CHARS) -> str:
     if not ok:
         return ""      # 内网地址一律不读：这是给公开网页用的工具
     try:
-        async with http.get(url) as resp:
+        # 重定向得自己跟：aiohttp 默认自动跟随，一个 302 就能把请求带到
+        # 127.0.0.1 / 10.x / 169.254.169.254 上去，上面那次 _is_public_url 等于白查
+        cur, resp = url, None
+        for _hop in range(3):
+            resp = await http.get(cur, allow_redirects=False)
+            loc = resp.headers.get("Location") if resp.status in (301, 302, 303, 307, 308) else None
+            if not loc:
+                break
+            resp.release()
+            nxt = urljoin(cur, loc)
+            if not await connectors._is_public_url(nxt):
+                return ""
+            cur = nxt
+        try:
             if resp.status != 200:
                 return ""
             raw = await connectors._read_body(resp, limit=1024 * 1024)
+        finally:
+            resp.release()
         text = connectors._clean_html(connectors._decode_body(resp, raw))
     except Exception as e:
         logger.info("[fish] 读页失败 %s：%s", url[:60], e)

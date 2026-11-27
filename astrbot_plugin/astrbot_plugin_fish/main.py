@@ -14,8 +14,6 @@ ab! 前缀的消息不碰，原样留给 AstrBot 自己的 LLM 链路（见 READ
 
 from __future__ import annotations
 
-from __future__ import annotations
-
 import asyncio
 import base64
 import functools

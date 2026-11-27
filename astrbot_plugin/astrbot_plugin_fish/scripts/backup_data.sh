@@ -89,6 +89,22 @@ if [ ! -f "$STAGE/data/fish_memory.db" ]; then
   echo "$(date '+%F %T') [FAIL] 快照里没有 fish_memory.db，放弃本次备份" >&2
   exit 1
 fi
+# 有文件不等于有内容：从仓库副本里跑这个脚本时，$PLUGIN_DIR/data 下那份
+# 77KB 的空模板库能一路过掉上面的检查，报「备份完成」、包里一句聊天都没有。
+# 所以按库里有没有真表来验收，模板库（0 张表）直接判失败
+if command -v sqlite3 >/dev/null 2>&1; then
+  _tables="$(sqlite3 "$STAGE/data/fish_memory.db" "select count(*) from sqlite_master where type='table';" 2>/dev/null || echo 0)"
+  _rows="$(sqlite3 "$STAGE/data/fish_memory.db" "select count(*) from fish_turn_logs;" 2>/dev/null || echo 0)"
+  if [ "${_tables:-0}" -lt 3 ] || [ "${_rows:-0}" -lt 1 ]; then
+    echo "$(date '+%F %T') [FAIL] 库是空的（表=${_tables:-0} 轮次=${_rows:-0}）——大概在仓库副本里跑的，线上库在 plugins/ 下" >&2
+    exit 1
+  fi
+  _ic="$(sqlite3 "$STAGE/data/fish_memory.db" 'pragma integrity_check;' 2>/dev/null | head -1)"
+  if [ "${_ic:-x}" != "ok" ]; then
+    echo "$(date '+%F %T') [FAIL] 快照 integrity_check 不过：${_ic:-无输出}" >&2
+    exit 1
+  fi
+fi
 
 # 先打成未压缩 tar 再 gzip：中途失败时 .part 不会被当成完整包
 TARFILE="$OUT/.fish-$STAMP.tar"

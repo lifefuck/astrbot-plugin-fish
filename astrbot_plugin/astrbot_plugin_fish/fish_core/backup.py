@@ -34,6 +34,9 @@ def snapshot_json(path: str, keep: int = 3, min_interval: float = 600.0) -> None
         bak = f"{path}.bak-{stamp}"
         shutil.copy2(path, bak)
         try:
+            # copy2 连 mtime 一起搬，源文件几周没动过 → 下一次判断「刚才才备过」永远不成立，
+            # 快照就会在每次保存时重刷。把 mtime 拨回当下，节流才真正生效
+            os.utime(bak, None)
             os.chmod(bak, 0o600)   # copy2 原样搬权限，源文件是 664 备份也是
         except OSError:
             pass

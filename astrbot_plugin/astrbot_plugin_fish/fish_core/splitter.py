@@ -205,6 +205,25 @@ def _merge_stubs(parts: list[str]) -> list[str]:
     return out
 
 
+def _clamp(parts: list[str], max_parts: int, max_chars: int) -> list[str]:
+    """最后一道均衡切：条数严格不超过 max_parts，单条超过 max_chars 就再切。
+
+    _pack_sentences 在「max_parts × max_chars 装不下全文」时会多切一条
+    （实测 6 行短句 max_parts=2 出 3 条），单条也可能被它拼回一整墙字。
+    名额不够时宁可单条略超长度，也不多发一条——群里「多发一条」比「字多」明显。
+    """
+    if max_chars > 0:
+        fixed: list[str] = []
+        for p in parts:
+            fixed.extend(_hard_cut(p, max_chars) if len(p) > max_chars else [p])
+        parts = fixed
+    if max_parts and len(parts) > max_parts:
+        whole = "".join(parts)
+        step = -(-len(whole) // max_parts)
+        parts = [whole[i:i + step] for i in range(0, len(whole), step)][:max_parts]
+    return parts
+
+
 def split_reply(text: str, max_chars: int = 45, max_parts: int = 3, min_tail: int = 3) -> list[str]:
     """返回 1~max_parts 条待发文本。短于阈值时原样返回单条。
 
@@ -222,7 +241,7 @@ def split_reply(text: str, max_chars: int = 45, max_parts: int = 3, min_tail: in
             if not line:
                 continue
             out.extend(split_reply(line, max_chars=max_chars, max_parts=max_parts, min_tail=min_tail))
-        return _fold_tail(_merge_stubs(out), max_parts, max_chars)
+        return _clamp(_fold_tail(_merge_stubs(out), max_parts, max_chars), max_parts, max_chars)
     if not text:
         return []
     # 模型爱用空行隔开两句话，群里显示成一大段空白。
@@ -264,6 +283,8 @@ def split_reply(text: str, max_chars: int = 45, max_parts: int = 3, min_tail: in
             parts.pop()
 
     parts = _fold_tail(parts, max_parts, max_chars)
+
+    parts = _clamp(parts, max_parts, max_chars)
 
     return [q for q in (_flatten(p) for p in parts) if q]
 

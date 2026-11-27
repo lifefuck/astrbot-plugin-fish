@@ -150,7 +150,11 @@ def find_by_name(members: list[dict], who: str, *, self_uid: str,
             continue
         if str(m.get("role") or "member") in ("admin", "owner"):
             continue
-        if uid == who or (_uid_hit and uid == _uid_hit) or who in nick or (nick and nick in who):
+        # 包含匹配只对 2 字以上生效：群友昵称里一个「鱼」「明」就能把半个群算成靶子，
+        # 一次骂一串人。1 个字的必须精确相等才认
+        _fuzzy = len(who) >= 2
+        if uid == who or (_uid_hit and uid == _uid_hit) or \
+                (_fuzzy and (who in nick or (nick and nick in who))):
             hit.append({"uid": uid, "nick": nick or uid, "role": m.get("role") or "member"})
     # 完全同名的只留一个，别一 @ 一大串
     seen, out = set(), []

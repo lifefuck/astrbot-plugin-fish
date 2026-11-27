@@ -74,10 +74,18 @@ prof = affect.profile(gid)
 check("profile 给出 max_segments", "max_segments" in (prof or {}) or True, str(prof)[:80])
 
 print("== 5. 主模块可加载、关键方法齐全 ==")
-spec = importlib.util.spec_from_file_location("fish_main", os.path.join(PLUG, "main.py"))
-main = importlib.util.module_from_spec(spec)
-sys.modules["fish_main"] = main
-spec.loader.exec_module(main)
+# main.py 里是相对导入（from .fish_core.kernel import *），按单文件 spec 加载
+# 会直接 ImportError。把插件目录的父目录塞进 sys.path，按「包」导入
+_parent = os.path.dirname(PLUG.rstrip("/"))
+if _parent not in sys.path:
+    sys.path.insert(0, _parent)
+try:
+    main = importlib.import_module(os.path.basename(PLUG.rstrip("/")) + ".main")
+except Exception:
+    spec = importlib.util.spec_from_file_location("fish_main", os.path.join(PLUG, "main.py"))
+    main = importlib.util.module_from_spec(spec)
+    sys.modules["fish_main"] = main
+    spec.loader.exec_module(main)
 cls = main.FishPlugin
 for name in ("_seen_mid", "_claim", "_release_claim", "on_group", "on_private", "on_decorate"):
     check(f"FishPlugin.{name} 存在", hasattr(cls, name))
@@ -99,8 +107,12 @@ check("不同 mid 不误判", cls._seen_mid(f, "m-2") is False)
 
 
 class St:
+    # 得跟 runtime 里真实状态对象的字段对齐：_claim 每次都会 claim_token += 1，
+    # 少了这两个字段，smoke 挂的是测试桩而不是被测代码
     last_bot_reply_ts = 100.0
     claim_prev = 0.0
+    claim_token = 0
+    claim_owner = None
     claiming = False
 
 
