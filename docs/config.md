@@ -195,7 +195,7 @@
 | `research_max_rounds` | `4` | 检索最多几轮工具调用。每轮可以搜一次或读一个网页。4 轮够覆盖「查型号→查代号→读状态表」；调大只会更慢。 |
 | `research_budget_sec` | `150` | 一次检索的总时长上限（秒）。到点就拿手上已有的材料收尾，不会把群挂在那儿等。 |
 | `search_proxy` | - | 搜索用的 HTTP 代理。留空自动用 http://127.0.0.1:7890（DuckDuckGo 直连不通）。代理没开时自动退到百度。 |
-| `enable_games` | `true` | 文字游戏：数字炸弹、掷骰子、抽签 |
+| `enable_games` | `true` | 文字游戏：掷骰子、抛硬币、抽签 |
 | `yunzai_sync` | `true` | /off 时把本群从云崽白名单摘掉，/on 加回来 |
 | `yunzai_other_yaml` | - | 云崽 other.yaml 路径，留空用默认 ~/projects/trss-yunzai/config/config/other.yaml |
 | `backup_enabled` | `true` | 记忆库与状态文件自动备份 |
