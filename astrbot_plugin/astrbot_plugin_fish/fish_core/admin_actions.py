@@ -34,6 +34,9 @@ _UNBAN_OBJ = re.compile(r"(禁言|禁|关|限制|黑屋|小黑屋)")
 # 数字兜底会把「我踢了80000步」的步数当 QQ 号
 _NUM_UNIT = re.compile(r"\d{5,12}\s*(?:步|元|块|个|人|分|秒|天|年|岁|次|条|页|米|度|斤|万|千|层|抽|连)")
 _RE_AT = re.compile(r"\[CQ:at,qq=(\d+)\]")
+# 中文数字：只覆盖禁言时长会出现的 1~99（「两小时」「十二分钟」「二十五分钟」）
+_CN_DIGIT = {"零": 0, "一": 1, "两": 2, "二": 2, "三": 3, "四": 4,
+             "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 
 _ADMIN_CACHE: dict = {}
 _ADMIN_TTL = 60.0
@@ -49,17 +52,44 @@ def is_imperative(body: str) -> bool:
     return True
 
 
+def _cn_num(s: str):
+    """中文数字转 int：认「两」「十」「十二」「二十」「二十五」，只覆盖 1~99。"""
+    if not s:
+        return None
+    if "十" in s:
+        a, _, b = s.partition("十")
+        if (a and a not in _CN_DIGIT) or (b and b not in _CN_DIGIT):
+            return None
+        tens = _CN_DIGIT.get(a, 1) if a else 1
+        ones = _CN_DIGIT.get(b, 0) if b else 0
+        return tens * 10 + ones
+    if len(s) == 1:
+        return _CN_DIGIT.get(s)
+    return None
+
+
 def parse_duration(text: str) -> tuple[int, str]:
-    """「10分钟」「半小时」「1小时」→ 秒；解析不出按 10 分钟。返回 (秒, 去掉时长后的文本)。"""
+    """「10分钟」「半小时」「1小时」「两小时」「1.5 小时」→ 秒；解析不出按 10 分钟。
+
+    返回 (秒, 去掉时长后的文本)。
+    """
     if "半小时" in text or "半钟头" in text:
         # 「半钟头」也走这条：老版只判「半小时」，半钟头会掉进默认 10 分钟
         return 1800, text.replace("半小时", "").replace("半钟头", "")
-    m = re.search(r"(\d+)\s*(秒|分钟|分|小时|钟头|天)", text)
+    # 小数必须一起认：旧正则 (\d+) 遇到「1.5 小时」只吃到 1，剩下的「.5」还残留在文本里，
+    # 实测「禁言某人 1.5 小时」变成 1 小时 + 目标里多一个「1.」。中文数字同理，
+    # 「两小时」在旧代码里直接掉到默认 600 秒
+    m = re.search(r"(\d+(?:\.\d+)?|[零一两二三四五六七八九十]+)\s*(秒|分钟|分|小时|钟头|天)", text)
     if not m:
         return 600, text
-    n, unit = int(m.group(1)), m.group(2)
+    raw, unit = m.group(1), m.group(2)
+    try:
+        n = float(raw)
+    except ValueError:
+        cn = _cn_num(raw)
+        n = float(cn) if cn is not None else 10.0
     mult = {"秒": 1, "分钟": 60, "分": 60, "小时": 3600, "钟头": 3600, "天": 86400}[unit]
-    return max(60, min(n * mult, 12 * 3600)), (text[:m.start()] + text[m.end():])
+    return max(60, min(int(n * mult), 12 * 3600)), (text[:m.start()] + text[m.end():])
 
 
 AMBIGUOUS = "__ambiguous__"
@@ -124,6 +154,9 @@ def _ok(res) -> bool:
     """
     if res is None or res is True:
         return True
+    if res is False:
+        # 适配器/工具层直接返回布尔失败时必须认，否则群里回「关小黑屋了」其实没关
+        return False
     if isinstance(res, dict):
         st = str(res.get("status") or "").lower()
         if st in ("failed", "error", "fail"):
@@ -131,7 +164,10 @@ def _ok(res) -> bool:
         # retcode 0=成功，1=已受理（OneBot 的异步语义），其余算失败
         if "retcode" in res and int(res.get("retcode") or 0) not in (0, 1):
             return False
-    return True
+        return True
+    # 既不是 None/True 也不是 dict（例如适配器回的 "ok" 字符串）：
+    # 说不清就不许在群里报成功，一律当没成
+    return False
 
 
 async def do_ban(bot, gid: str, sender_id: str, nick_map: dict, at_ids: list,

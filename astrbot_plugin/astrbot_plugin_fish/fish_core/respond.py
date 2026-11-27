@@ -32,6 +32,17 @@ from astrbot.core.message.components import At, AtAll, Image, Plain, Poke, Reply
 from .kernel import *  # noqa: F401,F403
 from . import huoren
 
+# 出口最后一道标签闸。前面每一步剥标签都有「整句剥空就回退原文」的分支，
+# 实测 [REPORT:广告|拉人] [QUOTE:123] [画图:…] 都这么原样进过群。
+# 这里不看上下文，见到就删——宁可少一句话，也不许内部指针进群。
+_HARD_TAG_RE = re.compile(
+    r"[\[【]\s*(?:REPORT|QUOTE|画图|MEME|MEMO|搜索|查梗|看图|PASS|EMOJI|SING|VOICE|PIXIV|拍一拍)"
+    r"\s*(?:[:：][^\]】]*)?[\]】]",
+    re.IGNORECASE,
+)
+# 注入残留：模型把提示词里的占位符当正文抄出来
+_PLACEHOLDER_RE = re.compile(r"〔(?:占位符|待插入|此处填写|待填)[^〕]{0,12}〕")
+
 
 def _pick_meme(tag: str, text: str = ""):
     """按标签挑图：标签是场合（冷场/调侃/接梗/自嘲）就走场景桶，否则按情绪挑。
@@ -416,8 +427,10 @@ class RespondMixin:
         # 没闭合的发图指针同样不能进群
         clean = _PIXIV_LEFTOVER_RE.sub("", clean).strip()
         # 画图标签剥完正文就空了：正文本来该是空的，绝不能回退成「带标签的原句」——
-        # 回退之后标签会被当正文发进群（实测「[画图:喜报:今天没人迟到]」就是这么裸奔的）
-        raw_text = clean or (meme_gen.extract_tag(text)[0].strip() if draw_req else text)
+        # 回退之后标签会被当正文发进群（实测「[画图:喜报:今天没人迟到]」就是这么裸奔的）。
+        # 非画图分支同理：以前 else 回退原文，[REPORT:广告|拉人] / [QUOTE:123] 原样进群，
+        # 只有 [MEME:] 走另一条剥除分支才正常。宁可静默，也不许把指针发出去
+        raw_text = clean or (meme_gen.extract_tag(text)[0].strip() if draw_req else "")
         # AI 味闸（搬 dsh-aiflavour）：先看原文再洗。它会学：同一个 AI 腔词根
         # 本群累计够次数才真开始剥，久不命中自动降级，避免词表越滚越大误伤
         # 正常口语。会话刹车 = 刚被拦过又来说教，整条不发（光剥会削出一堆半句）
@@ -500,6 +513,11 @@ class RespondMixin:
                 self._last_bot_ts = {**getattr(self, "_last_bot_ts", {}), _gid_ts: time.time()}
         except Exception as e:
             logger.debug("[fish] 出口清洗失败：%s", e)
+        # 最后一道标签闸：上面任何一步「空就回退原文」漏下来的内部指针，在这里统一抹掉
+        if text:
+            text = _HARD_TAG_RE.sub("", text)
+            text = _PLACEHOLDER_RE.sub("", text)
+            text = text.strip()
         if not text.strip():
             # 全句都是旁白/占位符，没有一个字是能对人说的：静默，别拿原文兜底
             logger.info("[fish] 群 %s 清洗后无正文（原文：%s），静默不发", gid, raw_text[:30])

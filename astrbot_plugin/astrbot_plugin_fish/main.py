@@ -292,6 +292,8 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         只要文本非空就不插手（避免和 on_group 抢同一条消息）。
         """
         if not self.cfg.get("enabled", True):
+            # 同 on_group：裸 return 会让这条 @ 落到默认人格手里
+            event.stop_event()
             return
         try:
             segs = list(getattr(event.message_obj, "message", []) or [])
@@ -319,6 +321,9 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
     @_handler_guard
     async def on_group(self, event: AstrMessageEvent):
         if not self.cfg.get("enabled", True):
+            # 只 return 会把这条消息让给框架默认人格：面板关了总开关，
+            # 群里反而多出一条不是鱼说的回复（而且不受白名单/密度闸约束）
+            event.stop_event()
             return
 
         gid = self._gid_of(event)
@@ -1452,21 +1457,25 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             yield _r
 
     @filter.command("tocken", alias={"token", "用量", "token用量"})
+    @_handler_guard
     async def cmd_tocken(self, event: AstrMessageEvent):
         async for _r in CommandsMixin.cmd_tocken(self, event):
             yield _r
 
     @filter.command("off", alias={"静默"})
+    @_handler_guard
     async def cmd_off(self, event: AstrMessageEvent):
         async for _r in CommandsMixin.cmd_off(self, event):
             yield _r
 
     @filter.command("on", alias={"恢复"})
+    @_handler_guard
     async def cmd_on(self, event: AstrMessageEvent):
         async for _r in CommandsMixin.cmd_on(self, event):
             yield _r
 
     @filter.command("memes", alias={"reload_memes", "梗库"})
+    @_handler_guard
     async def cmd_memes(self, event: AstrMessageEvent):
         async for _r in CommandsMixin.cmd_memes(self, event):
             yield _r

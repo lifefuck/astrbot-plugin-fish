@@ -147,7 +147,7 @@ def process_number_bomb(group_id: int, text: str, user_id: int,
     # 发起新游戏
     if t in _BOMB_START:
         if game and game.get("game") == "bomb":
-            return True, f"游戏还在进行，当前范围 [{game['low']} ~ {game['high']}]，继续猜"
+            return True, f"游戏还在进行，当前范围 [{game['low'] + 1} ~ {game['high'] - 1}]，继续猜"
 
         target = _RNG.randint(2, 99)
         active_games[group_id] = {
@@ -205,11 +205,14 @@ def process_number_bomb(group_id: int, text: str, user_id: int,
             )
         elif val < target:
             # 边界本身已经被猜过了，区间要往里收一格，否则下一轮照着提示再猜一次
-            # 同一个数，永远「安全」
-            game["low"] = val + 1
-            return True, f"安全，范围缩到【{val + 1} ~ {high}】"
+            # 同一个数，永远「安全」。
+            # 注意 low/high 是开区间（自身已排除），所以收窄只能写 val，不能写 val+1：
+            # 以前写 val+1，猜中 target-1 时 low 直接变成 target，答案被 val <= low 挡死，
+            # 之后任何数字都回「超出范围」，只能等超时炸掉（实测已复现）
+            game["low"] = val
+            return True, f"安全，范围缩到【{val + 1} ~ {high - 1}】"
         else:
-            game["high"] = val - 1
-            return True, f"安全，范围缩到【{low} ~ {val - 1}】"
+            game["high"] = val
+            return True, f"安全，范围缩到【{low + 1} ~ {val - 1}】"
 
     return False, None

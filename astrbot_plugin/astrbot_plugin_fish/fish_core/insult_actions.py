@@ -200,5 +200,6 @@ def clean_lines(text: str, *, limit: int = 2) -> list[str]:
             out.append(line)
         if len(out) >= limit:
             break
-    fallback = quarrel._QUIPS if quarrel is not None else ("急得跳脚像个小丑",)
-    return out or [random.choice(fallback)]
+    # 模型输出被过滤光了就闭嘴。以前这里会从固定句库里随机甩一句并 @ 具体的人：
+    # 内容模型根本没参与，纯粹是鱼自己挑一个群友开骂，而且 @ 是实打实的骚扰
+    return out

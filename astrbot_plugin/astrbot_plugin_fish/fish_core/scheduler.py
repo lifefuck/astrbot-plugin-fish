@@ -339,11 +339,13 @@ def schedule(sig: Any, cfg: Optional[Dict[str, Any]] = None, *, decision: Any = 
         trigger, why = "stall", stall_why
     elif want_help and add >= _ADD_MIN_HELP:
         trigger, why = "help", "明确求助"
-    elif warm_ok:
+    elif warm_ok and not _hard_blocked(d.reason or ""):
         # 以前这里还有 `and not denied`，而 denied 对「没点名鱼」的普通群聊几乎恒为 True，
         # 于是热聊档形同虚设（16:34 那场 67 条回放 warm 0 触发）。热聊档存在的意义就是
         # 「没人点名但聊得热、鱼可以搭一句」，只靠 warm_chat 自己的门槛（沉默≥180s、
         # 近段≥6 条且≥2 人）和主动插话的每小时上限兜底
+        # 但硬拦必须留：/off、被禁言、在跟别人说话、别的机器人在场，
+        # 以前一条都不查，warm 能把 /off 直接翻案成「说」（静默群里照样开口）
         trigger, why = "warm", warm_why
     if not trigger:
         if ok:

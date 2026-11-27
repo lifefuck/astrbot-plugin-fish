@@ -47,7 +47,9 @@ class CommandsMixin:
         text = str(getattr(event, "message_str", "") or "").strip()
         # 框架通常已经剥掉唤醒前缀；这里再削一遍斜杠/井号，兼容手动写的 /on
         word = text.lstrip("/／#!！").strip()
-        return word in self._UNMUTE_TEXTS
+        # 必须 lower：以前直接比对集合，群里发 /ON、/On 解不了静默，
+        # 只能靠重启或手改 group_muted.json 救回来
+        return word.lower() in self._UNMUTE_TEXTS
 
     async def muted_branch(self, event: AstrMessageEvent, gid: str):
         """静默期间收到群消息：只有 /on 放行，其余一个字都不回。
@@ -110,8 +112,10 @@ class CommandsMixin:
         gid = self._gid_of(event)
         if not gid or not gid.isdigit():
             # 私聊里「on my way 马上到」这种正常聊天会被短别名当指令吃掉，
-            # 以前还会 stop_event，owner 私聊从此不再回话。只有真写了 /off 才拦。
-            if not (event.message_str or "").lstrip().startswith("/"):
+            # 以前还会 stop_event，owner 私聊从此不再回话。
+            # 注意别用 startswith("/") 判：框架剥唤醒前缀时把斜杠一起吃了，
+            # message_str 到这里只剩 "off"，那个判断恒假 → 私聊 /off 永远没反应
+            if (event.message_str or "").strip().lower() not in ("off", "静默"):
                 return
             event.stop_event()
             yield event.plain_result("⚠️ 静默只能在群里发")
@@ -139,8 +143,9 @@ class CommandsMixin:
     async def cmd_on(self, event: AstrMessageEvent):
         gid = self._gid_of(event)
         if not gid or not gid.isdigit():
-            # 同上：私聊「on my way」不该被当指令，也不该把事件吞掉
-            if not (event.message_str or "").lstrip().startswith("/"):
+            # 同上：私聊「on my way」不该被当指令，也不该把事件吞掉；
+            # 同理不能用 startswith("/")，框架已经把唤醒前缀剥掉了
+            if (event.message_str or "").strip().lower() not in ("on", "恢复"):
                 return
             event.stop_event()
             yield event.plain_result("⚠️ 这条只能在群里发")

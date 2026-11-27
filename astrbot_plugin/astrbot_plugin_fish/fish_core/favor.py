@@ -179,6 +179,13 @@ def set_locked(person_id, value: float) -> None:
     if not person_id:
         return
     pid = str(person_id)
+    # 面板里「不锁」是填 0（main.py 的注释也这么写）。以前无条件 LOCKED[pid]=0，
+    # score() 恒返回 0、tier 落「嫌弃」、prompt_memo 走「戒备」——
+    # 主人一关锁分，鱼对他的态度直接掉到最差
+    if not value:
+        LOCKED.pop(pid, None)
+        _dirty = True
+        return
     LOCKED[pid] = float(value)
     for g in list(_state.values()):
         if not isinstance(g, dict):
