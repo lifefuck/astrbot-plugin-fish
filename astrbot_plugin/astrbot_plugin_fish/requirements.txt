@@ -5,3 +5,6 @@ silk-python>=0.2.9
 # 实测 403MB，走代理约 25 秒
 meme_generator==0.2.3
 aiohttp>=3.9
+
+# 谐音梗识别（夺笋/蚌埠住了）：没装就只按字面认，装了才按读音兜底
+pypinyin>=0.51
