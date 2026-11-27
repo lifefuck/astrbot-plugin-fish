@@ -399,7 +399,9 @@ DEFAULTS = {
     "vision_wb_timeout_sec": 16,
     "vision_fallback_models": ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"],
     "vision_max_images": 2,
-    "vision_timeout_sec": 12,
+    # 群聊等不起：单模型 12 秒会让每条 @ 回复都卡在 10 秒以上，砍到 6 秒
+    # 超时就换下一个模型；看不懂比拖着不回更可接受
+    "vision_timeout_sec": 6,
     "vision_total_budget_sec": 20,
     "vision_proxy": "http://127.0.0.1:7890",
     "vision_api_key": "",

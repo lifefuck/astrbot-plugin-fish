@@ -44,7 +44,7 @@
 | `vision_model` | `gemini-3.5-flash-lite` | 视觉主模型。默认 lite：实测 1~2 秒就能把图里的字逐字抄准；gemini-3.8-flash 在这台机器上常 25 秒超时，不适合群聊实时场景。 |
 | `vision_fallback_models` | `["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]` | 视觉降级模型。只放 lite 系：实测 3.5/3.1-flash-lite、flash-lite-latest 都在 1~3 秒出描述；3.6/3.8-flash 同样一张图要 14~21 秒，配 12 秒总预算等于永远轮不上。 |
 | `vision_max_images` | `2` | 单条消息最多看几张图 |
-| `vision_timeout_sec` | `12` | 单模型超时（秒）。群聊等不起，超时立刻换下一个模型。 |
+| `vision_timeout_sec` | `6` | 单模型超时（秒）。群聊等不起，超时立刻换下一个模型。 |
 | `hearing_enabled` | `true` | 听懂语音（把语音转成文字）。关掉后别人发语音鱼就当没内容，回到「听不到语音」的老行为 |
 | `meme_enabled` | `true` | 按情绪标签配表情包。模型写了 [MEME:情绪] 时附一张图；标签本身一定被剥掉，不会漏进群。 |
 | `meme_min_gap_sec` | `180` | 两张表情包之间的最小间隔（秒）。防止连着几轮都在甩图。 |
