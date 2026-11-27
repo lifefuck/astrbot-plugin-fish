@@ -228,6 +228,15 @@ def _trim(atoms, now=None):
     keep = [a for a in atoms if int(a.get("level", 3) or 0) == 0]
     rest = [a for a in atoms if int(a.get("level", 3) or 0) != 0]
     if len(keep) >= MAX_NOTES:
+        # 0 级条目超上限（正常不会发生）时也按「被强化过几次 + 有多新」留，
+        # 而不是按写入顺序切前 N 个：先写的往往是最早的规矩，反而最该留
+        keep.sort(key=lambda a: (int(a.get("hits", 0)), float(a.get("created_at", 0))), reverse=True)
+        try:  # 这个模块刻意不依赖 astrbot，日志只能用时再取
+            from astrbot.api import logger as _logger
+
+            _logger.warning("[atoms] 0 级条目 %d 条超过上限 %d，按强化次数截断", len(keep), MAX_NOTES)
+        except Exception:
+            pass
         return keep[:MAX_NOTES]
     ranked = sorted(rest, key=lambda a: (_score(a, now), int(a.get("hits", 0))), reverse=True)
     return keep + ranked[:MAX_NOTES - len(keep)]

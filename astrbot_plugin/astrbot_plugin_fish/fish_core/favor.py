@@ -81,6 +81,22 @@ def attach(writer=None, path: str = ""):
     _writer = writer
     _path = path
     load()
+    # 30 秒节流意味着进程被 kill / 重启时最后半分钟的分全丢。
+    # 注册一个退出兜底，正常关闭时强制落一次盘；异常崩溃仍然救不了，
+    # 但能挡住 systemctl restart 这种最常见的丢分场景
+    try:
+        import atexit
+
+        atexit.register(_flush_on_exit)
+    except Exception:
+        pass
+
+
+def _flush_on_exit():
+    try:
+        save(force=True)
+    except Exception:
+        pass
 
 
 def load():
