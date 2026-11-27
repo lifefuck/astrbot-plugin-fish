@@ -64,7 +64,7 @@ ok("6 大笑算接梗", okok and scene == "接梗", (okok, scene))
 okok, scene, _w = P.judge(sig("", images=2), None, CFG, T0)
 ok("7 连发两张图算接梗", okok and scene == "接梗", (okok, scene))
 okok, scene, _w = P.judge(sig("这张", images=1), None, CFG, T0)
-ok("8 单图加个短词算冷场垫图", okok and scene == "冷场", (okok, scene))
+ok("8 单图算接梗（图梗配接梗词池，不回「然后呢」）", okok and scene == "接梗", (okok, scene))
 
 # 9 配额：10 分钟 2 次
 P._state.clear()
@@ -111,5 +111,17 @@ P._state.clear()
 got = P.try_present(G, sig("哈哈哈哈"), None, CFG, T0)
 ok("14 在场返回场合和短词", bool(got) and got[0] == "接梗" and got[1], got)
 
-print("在场 %d 例：%d 通过 / %d 失败" % (15, 15 - len(FAIL), len(FAIL)))
+# 16 短词不许连着说同一个（以前 int(now)%4 会原地打转）
+P._state.clear()
+w1 = P.try_present(G, sig("哈哈哈哈"), None, CFG, T0)
+P.mark(G, w1[1], now=T0)
+w2 = P.try_present(G, sig("哈哈哈哈"), None, CFG, T0 + 130)
+ok("16 同一个词不连说两次", bool(w2) and w2[1] != w1[1], (w1, w2))
+
+# 17 单图给的短词来自接梗池，不会出现「然后呢」这种冷场催更词
+P._state.clear()
+g = P.try_present(G, sig("", images=1), None, CFG, T0)
+ok("17 单图短词不出冷场池", bool(g) and g[1] in P.SHORTS["接梗"], g)
+
+print("在场 %d 例：%d 通过 / %d 失败" % (17, 17 - len(FAIL), len(FAIL)))
 sys.exit(1 if FAIL else 0)

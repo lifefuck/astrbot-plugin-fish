@@ -91,8 +91,11 @@ class RespondMixin:
                 _ok, _why = True, ""
                 logger.debug("[fish] 在场斗图闸异常，放行：%s", e)
             if not _ok:
-                logger.info("[fish] 在场图被斗图闸拦下（%s），改发短词", _why)
-                b64 = None
+                # 拦下就到此为止。以前这里退化成发短词，可「群友刚发了图」正是
+                # 在场被触发的条件本身——每张图都必然换来一句「嗯/然后呢」，
+                # 群里看着就是抽疯。宁可不出声，也不要用万能词敷衍
+                logger.info("[fish] 在场图被斗图闸拦下（%s），本次不出声", _why)
+                return False
             else:
                 _st.last_meme_ts = time.time()
                 _st.recent_meme_tags.append("[在场:%s]" % scene)

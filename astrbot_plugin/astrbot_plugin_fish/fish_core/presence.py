@@ -86,8 +86,11 @@ def classify_text(text: str, images: int = 0) -> Tuple[bool, str]:
         return True, "调侃"
     if images >= 2:
         return True, "接梗"
-    if images == 1 and len(t) <= 6:
-        return True, "冷场"
+    # 单图归「接梗」，不归「冷场」：冷场词池是「嗯/在/说/然后呢」这类催人
+    # 往下说的词，对着三国杀截图回一句「然后呢」等于让对方继续说，比沉默更怪。
+    # 图梗本来该配「草/笑死/好家伙」这一档
+    if images == 1:
+        return True, "接梗"
     return False, ""
 
 
@@ -176,7 +179,13 @@ def try_present(gid: str, sig, dialogue: Optional[List[dict]] = None,
     if not qok:
         return None
     pool = SHORTS.get(scene) or SHORTS["接梗"]
-    short = pool[int(now) % len(pool)]
+    # 以前直接 int(now) % len(pool)：秒数取模既不是随机也不看历史，
+    # 同一分钟前后落点相同，于是「然后呢」一天能重复三遍。
+    # 这里先剔掉上次说过的词，剩下的照旧按秒数取，保持可预测但不再原地打转
+    row = _row(gid)
+    _last = str(row.get("last_text") or "")
+    cand = [w for w in pool if w != _last] or list(pool)
+    short = cand[int(now) % len(cand)]
     return scene, short
 
 
