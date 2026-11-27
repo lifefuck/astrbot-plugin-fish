@@ -253,7 +253,7 @@
   "vision_timeout_sec": {
     "description": "单模型超时（秒）",
     "type": "int",
-    "default": 12,
+    "default": 6,
     "slider": {
       "min": 3,
       "max": 60,
