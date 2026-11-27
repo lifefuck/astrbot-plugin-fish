@@ -653,17 +653,12 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
             text = text.lstrip()[len(prefix):].lstrip()
             forced = True
 
-        # 文字游戏：纯本地状态机，跟 @ 和插话概率都无关，谁发都能玩
+        # 文字游戏：纯本地判定，跟 @ 和插话概率都无关，谁发都能玩。
+        # 只剩单次触发的玩法（骰子/硬币/抽签）——数字炸弹已砍，见 games.py 顶部说明
         if self.cfg.get("enable_games", True) and text and gid.isdigit():
             quick = games.handle_quick_game_commands(text)
             if quick:
                 yield event.plain_result(quick)
-                event.stop_event()
-                return
-            handled, bomb_reply = games.process_number_bomb(int(gid), text, uid, nick)
-            if handled:
-                if bomb_reply:
-                    yield event.plain_result(bomb_reply)
                 event.stop_event()
                 return
 

@@ -437,7 +437,7 @@ DEFAULTS = {
     # 心流：energy/warmth 按会话落盘，压成一句提示词
     "huoren_mood": True,
     # --- 文字游戏 / 斗图 / 联网扩展 ---
-    "enable_games": True,          # 数字炸弹、掷骰子、抽签、点名
+    "enable_games": True,          # 掷骰子、抛硬币、抽签（数字炸弹已砍）
     "meme_battle_enabled": True,   # @ 带图时斗图反杀
     "connectors_enabled": True,    # 被叫到且明确问「出处/搜一下/新番」时才外联
     "meme_pool_size": 30,          # 热梗池每轮注入多少条

@@ -942,7 +942,7 @@
       "enable_games": {
         "type": "bool",
         "default": true,
-        "description": "文字游戏：数字炸弹、掷骰子、抽签"
+        "description": "文字游戏：掷骰子、抛硬币、抽签"
       },
       "yunzai_sync": {
         "type": "bool",
