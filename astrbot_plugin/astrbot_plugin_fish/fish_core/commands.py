@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-from __future__ import annotations
-
 import asyncio
 import base64
 import functools
@@ -191,6 +189,10 @@ class CommandsMixin:
         try:
             self.memes.load_pool(force=True)
             self.memes.load_group_slang()
+            # 热梗池和表情包索引是两套东西：以前 /memes 只刷前者，
+            # stealer 刚偷的图要等重启才认，群里就是「刚偷完发不出来」
+            from . import meme_catalog as _mc
+            _mc.reload()
         except Exception as e:
             # 原始异常里常带绝对路径和 json 行号，发到群里等于把自己的目录结构送人
             logger.warning("[fish] 重载热梗失败：%s", e)

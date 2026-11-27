@@ -100,6 +100,14 @@ def _load_stealer() -> None:
         logger.info("stealer 偷来的表情包并入索引: %d 张", added)
 
 
+def reload() -> int:
+    """清索引重读。stealer 新偷的图、手工往索引里加的条目，不重启也能生效。"""
+    _by_emotion.clear()
+    _by_keyword.clear()
+    _load()
+    return sum(len(v) for v in _by_emotion.values())
+
+
 def _load() -> None:
     if _by_emotion:
         return
