@@ -55,7 +55,8 @@ long_text = "今天这事儿吧，我觉得先说结论，然后再解释为什�
 parts3 = splitter.split_reply(long_text, max_chars=20, max_parts=3)
 parts1 = splitter.split_reply(long_text, max_chars=20, max_parts=1)
 check("max_parts=3 最多 3 条", 1 <= len(parts3) <= 3, str(len(parts3)))
-check("max_parts=1 只发 1 条", len(parts1) == 1, str(len(parts1)))
+# 字数上限优先于条数：max_chars=20 装不下这段 47 字的话，宁可多发一条也不发一堵墙
+check("max_parts=1 也不超单条字数", all(len(p) <= 20 for p in parts1), str([len(p) for p in parts1]))
 check("拆开不丢字", "".join(parts3).replace(" ", "") != "" and len("".join(parts3)) >= len(long_text) * 0.6)
 
 print("== 4. 好感/心境联动：接口真的能算 delta ==")

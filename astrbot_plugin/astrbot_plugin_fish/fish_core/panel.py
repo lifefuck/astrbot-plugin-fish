@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import sqlite3
@@ -83,6 +84,29 @@ class PanelApi:
             return json.loads(f.read_text(encoding="utf-8"))
         except Exception:
             return {}
+
+    def _memory_totals(self) -> dict[str, int]:
+        """一次扫库拿到每群条数。
+
+        列群时按群各调一次 _memory_stats 等于把整张表扫 N 遍——群列表是面板默认页，
+        库一大每次刷新都卡住事件循环，群里的回复跟着一起慢。
+        """
+        db = self._mem_db()
+        if not db.is_file():
+            return {}
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=3)
+            try:
+                rows = conn.execute(
+                    "SELECT group_id, COUNT(*) FROM fish_memory_records "
+                    "WHERE is_deleted = 0 GROUP BY group_id"
+                ).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            logger.warning("[fish] 控制台读记忆库失败：%s", e)
+            return {}
+        return {str(r[0]): int(r[1]) for r in rows}
 
     def _memory_stats(self, group_id: str | None = None) -> dict:
         """记忆条数、人数、类型分布。库不存在或正被写都当成空，面板不能因此报错。"""
@@ -215,6 +239,8 @@ class PanelApi:
     async def groups(self):
         now = time.time()
         affect_state = self._affect_state()
+        # 放线程里扫，别让面板刷新把消息处理卡住
+        mem_totals = await asyncio.to_thread(self._memory_totals)
         out = []
         for gid in self._known_groups():
             st = getattr(self.p, "_groups", {}).get(gid)
@@ -251,7 +277,7 @@ class PanelApi:
                     "care": len(a.get("care") or []),
                     "updated_ago": _ago(float(a.get("updated", 0) or 0), now),
                 },
-                "memory": self._memory_stats(gid)["total"],
+                "memory": mem_totals.get(str(gid), 0),
             })
         # 最近有动静的排前面，一屏能看到正在用的群
         out.sort(key=lambda g: (g["last_msg_ago"] is None, g["last_msg_ago"] or 1e18))

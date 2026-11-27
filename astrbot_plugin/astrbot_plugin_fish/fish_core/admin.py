@@ -438,6 +438,7 @@ class AdminMixin:
         self_uid = str(event.get_self_id())
         owner = str(self.cfg.get("owner_qq") or "").strip()
         members = await self._group_members(event, gid)
+        _real_members = bool(members)
         if not members:
             # 取不到成员表（接口超时/没权限）时别干瞪眼：用最近说过话的人兜底，
             # 否则群里一句「骂 xxx」只会在日志留一行「找不到靶子」，人看着就是犯傻
@@ -465,6 +466,11 @@ class AdminMixin:
                 logger.info("[fish] 群 %s 派活但找不到靶子（%r），交回普通回复", gid, act.get("who"))
                 return False
         else:
+            if not _real_members:
+                # 兜底表的角色全填 member，群管混在里面也认不出来，
+                # 「无差别骂」很可能直接骂到管事的。宁可这次不开骂
+                logger.info("[fish] 群 %s 没拿到成员表，跳过「全员」开骂", gid)
+                return False
             recent = [{"uid": m.get("uid"), "nick": m.get("nick")}
                       for m in list(st.msgs)[-12:]][::-1]
             targets = insult_actions.pick_targets(
