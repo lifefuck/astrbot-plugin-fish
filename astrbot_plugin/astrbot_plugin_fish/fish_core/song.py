@@ -133,6 +133,20 @@ class SongService:
             message=[{"type": "text", "data": {"text": text}}],
         )
 
+    async def _progress(self, event, gid: str, size_mb: float) -> None:
+        """语音上行前的进度提示。
+
+        实测 5.9MB 的文件从 call_action 到真进群要 33 秒（QQ 那边转码+上传），
+        中间群里一片死寂，用户会以为点歌没生效。小文件发得快，不必刷这条。
+        """
+        if size_mb < 1.5:
+            return
+        try:
+            await self.say(event, gid, f"下好了，{size_mb:.1f}MB，正往群里传，等半分钟")
+        except Exception as e:
+            # 进度提示失败不能连累点歌本身：发不出去就静默继续
+            logger.debug("[fish] 点歌进度提示没发出去：%s", e)
+
     async def play(self, event, query: str, session_id: str, gid: str, on_stage=None):
         """点歌入口：先看缓存，再按几种写法依次搜。
 
@@ -242,6 +256,7 @@ class SongService:
             if size_mb > _MAX_SEND_MB:
                 logger.info("[fish] 点歌文件 %.1fMB 偏大，先压一版", size_mb)
                 small = await self._shrink(small)
+            await self._progress(event, gid, os.path.getsize(small) / 1048576)
             try:
                 await asyncio.wait_for(self._send_voice(event, gid, small), 90)
             except asyncio.TimeoutError:
@@ -329,6 +344,7 @@ class SongService:
                 if size_mb > _MAX_SEND_MB:
                     logger.info("[fish] 点歌压缩后仍 %.1fMB，放弃发送", size_mb)
                     return False
+            await self._progress(event, gid, size_mb)
             t1 = time.monotonic()
             try:
                 await asyncio.wait_for(self._send_voice(event, gid, small), 90)
