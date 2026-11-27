@@ -203,7 +203,10 @@ class MediaMixin:
             desc = await vision.describe([base64.b64encode(raw).decode()], self.cfg, logger=logger)
             desc = (desc or "").strip()
             if desc:
-                logger.info("[fish] 引用图片识图完成（%d 字）：%s", len(desc), desc[:50])
+                # 描述是多行的（模型爱写「画面内容如下：」再换行），
+                # 直接截 50 字会把换行一起带上，一条图在日志里刷四五行
+                logger.info("[fish] 引用图片识图完成（%d 字）：%s",
+                            len(desc), " ".join(desc[:50].split()))
             return desc
         except Exception as e:
             logger.warning("[fish] 引用图片识图失败：%s: %s", type(e).__name__, str(e)[:80])
@@ -220,7 +223,7 @@ class MediaMixin:
             return await asyncio.wait_for(
                 event.bot.call_action("get_forward_msg", message_id=fid), 6)
         except Exception as e:
-            logger.info("[fish] 转发直查失败（%s）：%s，改查 resid", fid, str(e)[:50])
+            logger.warning("[fish] 转发直查失败（%s）：%s，改查 resid", fid, str(e)[:50])
         try:
             got = await asyncio.wait_for(event.bot.call_action("get_msg", message_id=fid), 6)
             for seg in (((got or {}).get("data") or {}).get("message") or []):
@@ -233,7 +236,7 @@ class MediaMixin:
                     return await asyncio.wait_for(
                         event.bot.call_action("get_forward_msg", message_id=resid), 6)
         except Exception as e:
-            logger.info("[fish] 转发 resid 路也失败（%s）：%s", fid, str(e)[:60])
+            logger.warning("[fish] 转发 resid 路也失败（%s）：%s", fid, str(e)[:60])
         return None
 
     async def _forward_text(self, event, fid: str) -> str:
@@ -457,6 +460,6 @@ class MediaMixin:
                             break
                 except Exception as e:  # noqa: BLE001
                     logger.debug("[fish] 图片回填 ctx 失败：%s", e)
-            logger.info("[fish] 群 %s 图片回填时间线：%s", gid, desc[:60])
+            logger.info("[fish] 群 %s 图片回填时间线：%s", gid, " ".join(desc[:60].split()))
         except Exception as e:  # noqa: BLE001
             logger.debug("[fish] 图片回填失败：%s", e)

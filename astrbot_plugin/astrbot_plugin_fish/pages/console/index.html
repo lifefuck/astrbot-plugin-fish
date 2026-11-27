@@ -349,18 +349,33 @@ function renderFeed(d) {
 }
 
 async function load() {
-  try {
-    const [ov, gs] = await Promise.all([get("overview"), get("groups")]);
-    renderStats(ov);
-    renderGroups(gs.groups || []);
-    const gid = $("mgroup").value;
-    renderMem(await get("memories", gid ? { group_id: gid } : {}));
-    renderFavor(await get("favor", gid ? { group_id: gid } : {}));
-    renderFeed(await get("events", { limit: 80 }));
-    $("stamp").textContent = "刷新于 " + new Date().toLocaleTimeString("zh-CN");
-  } catch (e) {
-    $("stamp").innerHTML = `<span class="err">${esc(e.message)}</span>`;
-  }
+  // 每块单独兜底：以前整段包在 Promise.all + 一个 catch 里，记忆库一异常
+  // （最容易坏的恰恰是它）整页就空白，明明统计、群列表、事件流都是好的
+  const gid = $("mgroup").value;
+  const miss = [];
+  const safe = async (label, p) => {
+    try {
+      return await p;
+    } catch (e) {
+      miss.push(label);
+      return null;
+    }
+  };
+  const [ov, gs] = await Promise.all([
+    safe("总览", get("overview")),
+    safe("群列表", get("groups")),
+  ]);
+  if (ov) renderStats(ov);
+  if (gs) renderGroups(gs.groups || []);
+  const mem = await safe("记忆", get("memories", gid ? { group_id: gid } : {}));
+  if (mem) renderMem(mem);
+  const fav = await safe("好感", get("favor", gid ? { group_id: gid } : {}));
+  if (fav) renderFavor(fav);
+  const feed = await safe("事件", get("events", { limit: 80 }));
+  if (feed) renderFeed(feed);
+  $("stamp").innerHTML = miss.length
+    ? `<span class="err">没取到：${esc(miss.join("、"))}（其余照常）</span>`
+    : "刷新于 " + new Date().toLocaleTimeString("zh-CN");
 }
 
 $("mgroup").onchange = load;

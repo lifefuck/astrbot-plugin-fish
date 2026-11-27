@@ -1092,7 +1092,8 @@ class FishPlugin(RuntimeMixin, AdminMixin, MediaMixin, DecisionMixin, MemoryMixi
         if voice_text:
             logger.info("[fish] 群 %s 语音转写：%s", gid, voice_text[:60])
         if vision_desc:
-            logger.info("[fish] 群 %s 图片描述：%s", gid, vision_desc[:80])
+            logger.info("[fish] 群 %s 图片描述：%s", gid,
+                        " ".join(vision_desc[:80].split()))
         if verdict and not verdict.get("join"):
             if not (is_at or forced):
                 # 判「不接」就到此为止，主模型一次都不调（这是这一步省下的主要延迟）

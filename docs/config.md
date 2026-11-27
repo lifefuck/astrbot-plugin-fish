@@ -27,9 +27,9 @@
 | `follow_window_sec` | `300` | 被叫过后免 @ 追问窗口（秒） |
 | `follow_max_turns` | `2` | 追问窗口里最多连续免 @ 几次 |
 | `follow_min_gap_sec` | `8` | 追问窗口内两次回复的最小间隔（秒）,防止一句一回刷屏 |
-| `context_window_sec` | `7200` | 主模型上下文时间窗（秒）：这段时间内的发言都进 prompt，别再按固定条数截断话题 |
-| `context_turns_max` | `96` | 上文最多保留条数。超过就一次砍掉四分之一。砍得越频繁命中率越低，48 条约二三十轮一次。 |
-| `timeline_size` | `60` | 上下文条数上限（配合 context_window_sec 时间窗，先按时间筛再截条数） |
+| `context_window_sec` | `1800` | 主模型上下文时间窗（秒）：这段时间内的发言都进 prompt，别再按固定条数截断话题 |
+| `context_turns_max` | `48` | 上文最多保留条数。超过就一次砍掉四分之一。砍得越频繁命中率越低，48 条约二三十轮一次。 |
+| `timeline_size` | `40` | 上下文条数上限（配合 context_window_sec 时间窗，先按时间筛再截条数） |
 | `memory_recall_topk` | `4` | 记忆召回条数 |
 | `memory_source_required` | `true` | 记忆必须带出处才允许主动提。关掉会退回老行为：没有原文锚点的旧记忆也会被主动引用。没事别关。 |
 | `memory_min_confidence` | `0.5` | 主动引用记忆的最低置信度 |
@@ -163,6 +163,13 @@
 | `presence_enabled` | `true` | 在场模式。对不需要回答但值得有反应的消息（在笑、摆烂、抛梗），只丢一张表情或一个短词，不调模型。 |
 | `presence_gap_sec` | `120` | 在场间隔（秒）。两次在场之间至少隔多久。 |
 | `presence_per_10min` | `2` | 在场次数上限。10 分钟内最多在场几次。配额说了不算说话的配额，是单独一池。 |
+| `judge_threshold` | `0.48` | 接话门槛（0~1）。判官给的质量分低于它就装死不接。调高更安静，调低更爱插话 |
+| `cold_shoulder_sec` | `600` | 连续插话没人接之后安静多久（秒） |
+| `cold_shoulder_strikes` | `2` | 连续几次插话没人接开始算冷场 |
+| `warm_chat_enabled` | `true` | 热聊补话：群里聊得热闹而鱼一直没吭声时补一句 |
+| `warm_window_sec` | `180` | 判断热聊的回看窗口（秒） |
+| `warm_min_msgs` | `6` | 窗口内至少几条人话才算热聊 |
+| `warm_quiet_sec` | `240` | 自己沉默满多久才允许热聊补话（秒） |
 
 ## 高级分组：风控与告状（`advanced_safety`）
 

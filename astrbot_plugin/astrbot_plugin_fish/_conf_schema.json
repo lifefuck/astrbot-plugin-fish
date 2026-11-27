@@ -113,19 +113,19 @@
   },
   "context_window_sec": {
     "type": "int",
-    "default": 7200,
+    "default": 1800,
     "description": "主模型上下文时间窗（秒）：这段时间内的发言都进 prompt，别再按固定条数截断话题"
   },
   "context_turns_max": {
     "type": "int",
     "description": "上文最多保留条数",
     "hint": "超过就一次砍掉四分之一。砍得越频繁命中率越低，48 条约二三十轮一次。",
-    "default": 96
+    "default": 48
   },
   "timeline_size": {
     "description": "上下文条数上限（配合 context_window_sec 时间窗，先按时间筛再截条数）",
     "type": "int",
-    "default": 60,
+    "default": 40,
     "slider": {
       "min": 0,
       "max": 80,
@@ -816,6 +816,42 @@
         "type": "int",
         "default": 2,
         "hint": "10 分钟内最多在场几次。配额说了不算说话的配额，是单独一池。"
+      },
+      "judge_threshold": {
+        "type": "float",
+        "description": "接话门槛（0~1）。判官给的质量分低于它就装死不接",
+        "default": 0.48,
+        "hint": "调高更安静，调低更爱插话"
+      },
+      "cold_shoulder_sec": {
+        "type": "int",
+        "description": "连续插话没人接之后安静多久（秒）",
+        "default": 600
+      },
+      "cold_shoulder_strikes": {
+        "type": "int",
+        "description": "连续几次插话没人接开始算冷场",
+        "default": 2
+      },
+      "warm_chat_enabled": {
+        "type": "bool",
+        "description": "热聊补话：群里聊得热闹而鱼一直没吭声时补一句",
+        "default": true
+      },
+      "warm_window_sec": {
+        "type": "int",
+        "description": "判断热聊的回看窗口（秒）",
+        "default": 180
+      },
+      "warm_min_msgs": {
+        "type": "int",
+        "description": "窗口内至少几条人话才算热聊",
+        "default": 6
+      },
+      "warm_quiet_sec": {
+        "type": "int",
+        "description": "自己沉默满多久才允许热聊补话（秒）",
+        "default": 240
       }
     }
   },
